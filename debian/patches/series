@@ -1,13 +1,10 @@
 update-java-source-target-flags.patch
 disable-crypto.patch
-# Ubuntu: civetweb max connections
 civetweb-755-1.8-somaxconn-configurable_conf.patch
 civetweb-755-1.8-somaxconn-configurable.patch
 civetweb-755-1.8-somaxconn-configurable_test.patch
-# Debian misc fixes
 debian-armel-armhf-buildflags.patch
 fix-bash-completion-location
 32bit-fixes.patch
 riscv64-link-pthread.patch
-# AARCH64 EC regression
 bug1917414.patch

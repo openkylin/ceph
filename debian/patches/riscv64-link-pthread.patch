@@ -1,10 +1,18 @@
-Description: Link with -pthread instead of -lpthread to fix FTBFS on riscv64
+From: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Date: Tue, 15 Nov 2022 17:24:02 +0800
+Subject: Link with -pthread instead of -lpthread to fix FTBFS on riscv64
+
 Forwarded: no
 Last-Update: 2020-03-01
+---
+ CMakeLists.txt | 1 +
+ 1 file changed, 1 insertion(+)
 
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 267e565..4ba05ec 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -23,6 +23,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_S
+@@ -24,6 +24,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
  
  if(CMAKE_SYSTEM_NAME MATCHES "Linux")
    set(LINUX ON)

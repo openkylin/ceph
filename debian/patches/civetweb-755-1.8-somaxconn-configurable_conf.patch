@@ -1,10 +1,18 @@
-Description: Adds max_connections to reference configuration.
-Author: Jesse Williamson <jesse.williamson@canonical.com>
+From: Jesse Williamson <jesse.williamson@canonical.com>
+Date: Tue, 15 Nov 2022 17:24:02 +0800
+Subject: Adds max_connections to reference configuration.
+
 Origin: upstream, https://github.com/civetweb/civetweb/pull/776/commits/3b8eb36676f70d06f8918ccf62029207c49cdda0
 Bug: https://github.com/civetweb/civetweb/issues/775
 Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/ceph/+bug/1838109
+
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/ceph/+bug/1838109
 ---
-This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+ src/civetweb/resources/civetweb.conf | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/civetweb/resources/civetweb.conf b/src/civetweb/resources/civetweb.conf
+index 00aacde..c511ae8 100644
 --- a/src/civetweb/resources/civetweb.conf
 +++ b/src/civetweb/resources/civetweb.conf
 @@ -8,6 +8,8 @@

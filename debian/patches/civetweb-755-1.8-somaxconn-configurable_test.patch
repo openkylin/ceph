@@ -1,10 +1,18 @@
-Description: Adds max_connections to test display.
-Author: Jesse Williamson <jesse.williamson@canonical.com>
+From: Jesse Williamson <jesse.williamson@canonical.com>
+Date: Tue, 15 Nov 2022 17:24:02 +0800
+Subject: Adds max_connections to test display.
+
 Origin: upstream, https://github.com/civetweb/civetweb/pull/776/commits/3b8eb36676f70d06f8918ccf62029207c49cdda0
 Bug: https://github.com/civetweb/civetweb/issues/775
 Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/ceph/+bug/1838109
+
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/ceph/+bug/1838109
 ---
-This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+ src/civetweb/test/page3.ssjs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/civetweb/test/page3.ssjs b/src/civetweb/test/page3.ssjs
+index 71e55e3..70b840e 100644
 --- a/src/civetweb/test/page3.ssjs
 +++ b/src/civetweb/test/page3.ssjs
 @@ -21,6 +21,7 @@ opts = [

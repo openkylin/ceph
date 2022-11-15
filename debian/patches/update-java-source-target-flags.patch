@@ -1,15 +1,23 @@
-Description: use --release 7 instead of -source/-target
- Instead of -source/-target ceph should be build with --release for OpenJDK 9
- or later so that the bootclasspath is also set, as per JEP-247, otherwise it
- risks incurring into binary incompatibility when run with an earlier OpenJDK.
- OpenJDK 11 minimum compatibility release has been updated to 7.
-Author: Tiago Stürmer Daitx <tiago.daitx@ubuntu.com>
+From: =?utf-8?q?Tiago_St=C3=BCrmer_Daitx?= <tiago.daitx@ubuntu.com>
+Date: Tue, 15 Nov 2022 17:24:01 +0800
+Subject: use --release 7 instead of -source/-target
+
 Bug-Ubuntu: https://launchpad.net/bugs/1756854
 Bug-Ubuntu: https://launchpad.net/bugs/1766998
 Forwarded: no
 Last-Update: 2018-04-24
----
 
+Instead of -source/-target ceph should be build with --release for OpenJDK 9
+or later so that the bootclasspath is also set, as per JEP-247, otherwise it
+risks incurring into binary incompatibility when run with an earlier OpenJDK.
+OpenJDK 11 minimum compatibility release has been updated to 7.
+Last-Update: 2018-04-24
+---
+ src/java/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/java/CMakeLists.txt b/src/java/CMakeLists.txt
+index 62b5259..ce470db 100644
 --- a/src/java/CMakeLists.txt
 +++ b/src/java/CMakeLists.txt
 @@ -21,7 +21,7 @@ set(java_srcs

@@ -1,4 +1,3 @@
-From db463aa139aa0f3eb996062bd7c65f0d10a7932b Mon Sep 17 00:00:00 2001
 From: luo rixin <luorixin@huawei.com>
 Date: Fri, 8 Jan 2021 16:16:02 +0800
 Subject: [PATCH] src/isa-l/erasure_code: Fix text relocation on aarch64

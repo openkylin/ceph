@@ -1,3 +1,13 @@
+From: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Date: Tue, 15 Nov 2022 17:24:02 +0800
+Subject: fix-bash-completion-location
+
+---
+ src/bash_completion/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/bash_completion/CMakeLists.txt b/src/bash_completion/CMakeLists.txt
+index 8d83477..d963cc9 100644
 --- a/src/bash_completion/CMakeLists.txt
 +++ b/src/bash_completion/CMakeLists.txt
 @@ -11,5 +11,5 @@ if(WITH_RADOSGW)
