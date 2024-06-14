@@ -103,7 +103,7 @@ srandomdev(void)
 static int g_arc4random_initialized = 0;
 
 static uint32_t
-arc4random(void)
+rpl_arc4random(void)
 {
 	uint32_t r;
 	uint32_t r1, r2;
@@ -117,6 +117,8 @@ arc4random(void)
 	r = (r1 << 16) | r2;
 	return r;
 }
+
+#define arc4random   rpl_arc4random
 #endif /* HAVE_ARC4RANDOM */
 
 static void

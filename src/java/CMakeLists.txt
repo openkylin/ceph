@@ -15,13 +15,7 @@ set(java_srcs
   java/com/ceph/fs/CephStat.java
   java/com/ceph/fs/CephStatVFS.java)
 
-# note: for the -source 1.7 builds, we add
-#   -Xlint:-options
-# to get rid of the warning
-#   warning: [options] bootstrap class path not set in conjunction with -source 1.7
-# as per
-#   https://blogs.oracle.com/darcy/entry/bootclasspath_older_source
-set(CMAKE_JAVA_COMPILE_FLAGS "-source" "1.8" "-target" "1.8" "-Xlint:-options")
+set(CMAKE_JAVA_COMPILE_FLAGS "--release" $ENV{JAVA_TARGET_RELEASE} "-Xlint:-options")
 set(jni_header_dir "${CMAKE_CURRENT_BINARY_DIR}/native")
 if(CMAKE_VERSION VERSION_LESS 3.11)
   set(CMAKE_JAVA_COMPILE_FLAGS ${CMAKE_JAVA_COMPILE_FLAGS} "-h" ${jni_header_dir})

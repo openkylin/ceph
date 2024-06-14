@@ -230,7 +230,7 @@ elseif(HAVE_ARMV8_CRC)
     crc32c_aarch64.c)
 endif(HAVE_INTEL)
 
-add_library(crc32 OBJECT ${crc32_srcs})
+add_library(crc32 STATIC ${crc32_srcs})
 
 if(HAVE_ARMV8_CRC)
   set_target_properties(crc32 PROPERTIES

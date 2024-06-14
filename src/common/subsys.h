@@ -102,7 +102,6 @@ SUBSYS(seastore_backref, 0, 5)
 SUBSYS(alienstore, 0, 5)
 SUBSYS(mclock, 1, 5)
 SUBSYS(cyanstore, 0, 5)
-SUBSYS(ceph_exporter, 1, 5)
 SUBSYS(memstore, 1, 5)
 SUBSYS(trace, 1, 5)
 // *********************************************************************
