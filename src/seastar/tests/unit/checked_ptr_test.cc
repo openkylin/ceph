@@ -22,11 +22,29 @@
 
 #define BOOST_TEST_MODULE core
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <seastar/core/checked_ptr.hh>
 #include <seastar/core/weak_ptr.hh>
 
 using namespace seastar;
+
+static_assert(std::is_nothrow_default_constructible_v<checked_ptr<int*>>);
+static_assert(std::is_nothrow_move_constructible_v<checked_ptr<int*>>);
+static_assert(std::is_nothrow_copy_constructible_v<checked_ptr<int*>>);
+
+static_assert(std::is_nothrow_default_constructible_v<checked_ptr<weak_ptr<int>>>);
+static_assert(std::is_nothrow_move_constructible_v<checked_ptr<weak_ptr<int>>>);
+
+template <typename T>
+class may_throw_on_null_ptr : public seastar::weak_ptr<T> {
+public:
+    may_throw_on_null_ptr(std::nullptr_t) {}
+};
+
+static_assert(!std::is_nothrow_default_constructible_v<may_throw_on_null_ptr<int>>);
+static_assert(!std::is_nothrow_default_constructible_v<checked_ptr<may_throw_on_null_ptr<int>>>);
+static_assert(std::is_nothrow_move_constructible_v<checked_ptr<may_throw_on_null_ptr<int>>>);
+static_assert(std::is_nothrow_copy_constructible_v<checked_ptr<may_throw_on_null_ptr<int>>>);
 
 struct my_st : public weakly_referencable<my_st> {
         my_st(int a_) : a(a_) {}

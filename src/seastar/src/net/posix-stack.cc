@@ -19,21 +19,39 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
-#include <random>
+#ifdef SEASTAR_MODULE
+module;
+#endif
 
+#include <cassert>
+#include <chrono>
+#include <cstring>
+#include <functional>
+#include <random>
+#include <variant>
+
+#include <unistd.h>
 #include <linux/if.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <arpa/inet.h>
 #include <net/route.h>
+#include <netinet/tcp.h>
+#include <netinet/sctp.h>
+#include <sys/socket.h>
 
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/core/loop.hh>
+#include <seastar/core/reactor.hh>
 #include <seastar/net/posix-stack.hh>
 #include <seastar/net/net.hh>
 #include <seastar/net/packet.hh>
 #include <seastar/net/api.hh>
 #include <seastar/net/inet_address.hh>
 #include <seastar/util/std-compat.hh>
-#include <netinet/tcp.h>
-#include <netinet/sctp.h>
+#endif
 
 namespace std {
 
@@ -45,6 +63,23 @@ struct hash<seastar::net::posix_ap_server_socket_impl::protocol_and_socket_addre
         return h1 ^ h2;
     }
 };
+
+}
+
+
+namespace {
+
+// reinterpret_cast<foo*>() on a pointer that the compiler knows points to an
+// object with a different type is disliked by the compiler as it violates
+// strict aliasing rules. This safe version does the same thing but keeps the
+// compiler happy.
+template <typename T>
+T
+copy_reinterpret_cast(const void* ptr) {
+    T tmp;
+    std::memcpy(&tmp, ptr, sizeof(T));
+    return tmp;
+}
 
 }
 
@@ -63,8 +98,21 @@ public:
     virtual bool get_keepalive(file_desc& _fd) const = 0;
     virtual void set_keepalive_parameters(file_desc& _fd, const keepalive_params& params) const = 0;
     virtual keepalive_params get_keepalive_parameters(file_desc& _fd) const = 0;
+    virtual void set_sockopt(file_desc& _fd, int level, int optname, const void* data, size_t len) const {
+        _fd.setsockopt(level, optname, data, socklen_t(len));
+    }
+    virtual int get_sockopt(file_desc& _fd, int level, int optname, void* data, size_t len) const {
+        return _fd.getsockopt(level, optname, reinterpret_cast<char*>(data), socklen_t(len));
+    }
+    virtual socket_address local_address(file_desc& _fd) const {
+        return _fd.get_address();
+    }
+    virtual socket_address remote_address(file_desc& _fd) const {
+        return _fd.get_remote_address();
+    }
 };
 
+thread_local posix_ap_server_socket_impl::port_map_t posix_ap_server_socket_impl::ports{};
 thread_local posix_ap_server_socket_impl::sockets_map_t posix_ap_server_socket_impl::sockets{};
 thread_local posix_ap_server_socket_impl::conn_map_t posix_ap_server_socket_impl::conn_q{};
 
@@ -83,7 +131,7 @@ public:
         return _fd.getsockopt<int>(SOL_SOCKET, SO_KEEPALIVE);
     }
     virtual void set_keepalive_parameters(file_desc& _fd, const keepalive_params& params) const override {
-        const tcp_keepalive_params& pms = compat::get<tcp_keepalive_params>(params);
+        const tcp_keepalive_params& pms = std::get<tcp_keepalive_params>(params);
         _fd.setsockopt(IPPROTO_TCP, TCP_KEEPCNT, pms.count);
         _fd.setsockopt(IPPROTO_TCP, TCP_KEEPIDLE, int(pms.idle.count()));
         _fd.setsockopt(IPPROTO_TCP, TCP_KEEPINTVL, int(pms.interval.count()));
@@ -118,7 +166,7 @@ public:
         return _fd.getsockopt<sctp_paddrparams>(SOL_SCTP, SCTP_PEER_ADDR_PARAMS).spp_flags & SPP_HB_ENABLE;
     }
     virtual void set_keepalive_parameters(file_desc& _fd, const keepalive_params& kpms) const override {
-        const sctp_keepalive_params& pms = compat::get<sctp_keepalive_params>(kpms);
+        const sctp_keepalive_params& pms = std::get<sctp_keepalive_params>(kpms);
         auto params = _fd.getsockopt<sctp_paddrparams>(SOL_SCTP, SCTP_PEER_ADDR_PARAMS);
         params.spp_hbinterval = pms.interval.count() * 1000; // in milliseconds
         params.spp_pathmaxrxt = pms.count;
@@ -171,48 +219,79 @@ get_posix_connected_socket_ops(sa_family_t family, int protocol) {
     }
 }
 
+static void shutdown_socket_fd(pollable_fd& fd, int how) noexcept {
+    try {
+        // file_desc::shutdown ignores ENOTCONN. Other reasons for exception
+        // EINVAL (wrong "how") -- impossible
+        // ENOTSOCK (not a socket) -- incredible
+        // EBADF (invalid file descriptor) -- irretrievable
+        fd.shutdown(how);
+    } catch (...) {
+        on_internal_error(seastar_logger, format("socket shutdown({}, {}) failed: {}", fd.get_file_desc().fdinfo(), how, std::current_exception()));
+    }
+}
+
 class posix_connected_socket_impl final : public connected_socket_impl {
-    lw_shared_ptr<pollable_fd> _fd;
+    pollable_fd _fd;
     const posix_connected_socket_operations* _ops;
     conntrack::handle _handle;
-    compat::polymorphic_allocator<char>* _allocator;
+    std::pmr::polymorphic_allocator<char>* _allocator;
 private:
-    explicit posix_connected_socket_impl(sa_family_t family, int protocol, lw_shared_ptr<pollable_fd> fd, compat::polymorphic_allocator<char>* allocator=memory::malloc_allocator) :
+    explicit posix_connected_socket_impl(sa_family_t family, int protocol, pollable_fd fd, std::pmr::polymorphic_allocator<char>* allocator=memory::malloc_allocator) :
         _fd(std::move(fd)), _ops(get_posix_connected_socket_ops(family, protocol)), _allocator(allocator) {}
-    explicit posix_connected_socket_impl(sa_family_t family, int protocol, lw_shared_ptr<pollable_fd> fd, conntrack::handle&& handle,
-        compat::polymorphic_allocator<char>* allocator=memory::malloc_allocator) : _fd(std::move(fd))
+    explicit posix_connected_socket_impl(sa_family_t family, int protocol, pollable_fd fd, conntrack::handle&& handle,
+        std::pmr::polymorphic_allocator<char>* allocator=memory::malloc_allocator) : _fd(std::move(fd))
                 , _ops(get_posix_connected_socket_ops(family, protocol)), _handle(std::move(handle)), _allocator(allocator) {}
 public:
     virtual data_source source() override {
-        return data_source(std::make_unique< posix_data_source_impl>(_fd, _allocator));
+        return source(connected_socket_input_stream_config());
+    }
+    virtual data_source source(connected_socket_input_stream_config csisc) override {
+        return data_source(std::make_unique<posix_data_source_impl>(_fd, csisc, _allocator));
     }
     virtual data_sink sink() override {
         return data_sink(std::make_unique< posix_data_sink_impl>(_fd));
     }
     virtual void shutdown_input() override {
-        _fd->shutdown(SHUT_RD);
+        shutdown_socket_fd(_fd, SHUT_RD);
     }
     virtual void shutdown_output() override {
-        _fd->shutdown(SHUT_WR);
+        shutdown_socket_fd(_fd, SHUT_WR);
     }
     virtual void set_nodelay(bool nodelay) override {
-        return _ops->set_nodelay(_fd->get_file_desc(), nodelay);
+        return _ops->set_nodelay(_fd.get_file_desc(), nodelay);
     }
     virtual bool get_nodelay() const override {
-        return _ops->get_nodelay(_fd->get_file_desc());
+        return _ops->get_nodelay(_fd.get_file_desc());
     }
     void set_keepalive(bool keepalive) override {
-        return _ops->set_keepalive(_fd->get_file_desc(), keepalive);
+        return _ops->set_keepalive(_fd.get_file_desc(), keepalive);
     }
     bool get_keepalive() const override {
-        return _ops->get_keepalive(_fd->get_file_desc());
+        return _ops->get_keepalive(_fd.get_file_desc());
     }
     void set_keepalive_parameters(const keepalive_params& p) override {
-        return _ops->set_keepalive_parameters(_fd->get_file_desc(), p);
+        return _ops->set_keepalive_parameters(_fd.get_file_desc(), p);
     }
     keepalive_params get_keepalive_parameters() const override {
-        return _ops->get_keepalive_parameters(_fd->get_file_desc());
+        return _ops->get_keepalive_parameters(_fd.get_file_desc());
     }
+    void set_sockopt(int level, int optname, const void* data, size_t len) override {
+        return _ops->set_sockopt(_fd.get_file_desc(), level, optname, data, len);
+    }
+    int get_sockopt(int level, int optname, void* data, size_t len) const override {
+        return _ops->get_sockopt(_fd.get_file_desc(), level, optname, data, len);
+    }
+    socket_address local_address() const noexcept override {
+        return _ops->local_address(_fd.get_file_desc());
+    }
+    socket_address remote_address() const noexcept override {
+        return _ops->remote_address(_fd.get_file_desc());
+    }
+    future<> wait_input_shutdown() override {
+        return _fd.poll_rdhup();
+    }
+
     friend class posix_server_socket_impl;
     friend class posix_ap_server_socket_impl;
     friend class posix_reuseport_server_socket_impl;
@@ -330,8 +409,8 @@ static void resolve_outgoing_address(socket_address& a) {
 }
 
 class posix_socket_impl final : public socket_impl {
-    lw_shared_ptr<pollable_fd> _fd;
-    compat::polymorphic_allocator<char>* _allocator;
+    pollable_fd _fd;
+    std::pmr::polymorphic_allocator<char>* _allocator;
     bool _reuseaddr = false;
 
     future<> find_port_and_connect(socket_address sa, socket_address local, transport proto = transport::TCP) {
@@ -344,10 +423,10 @@ class posix_socket_impl final : public socket_impl {
         resolve_outgoing_address(sa);
         return repeat([this, sa, local, proto, attempts = 0, requested_port = ntoh(local.as_posix_sockaddr_in().sin_port)] () mutable {
             _fd = engine().make_pollable_fd(sa, int(proto));
-            _fd->get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, int(_reuseaddr));
-            uint16_t port = attempts++ < 5 && requested_port == 0 && proto == transport::TCP ? u(random_engine) * smp::count + engine().cpu_id() : requested_port;
+            _fd.get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, int(_reuseaddr));
+            uint16_t port = attempts++ < 5 && requested_port == 0 && proto == transport::TCP ? u(random_engine) * smp::count + this_shard_id() : requested_port;
             local.as_posix_sockaddr_in().sin_port = hton(port);
-            return futurize_apply([this, sa, local] { return engine().posix_connect(_fd, sa, local); }).then_wrapped([port, requested_port] (future<> f) {
+            return futurize_invoke([this, sa, local] { return engine().posix_connect(_fd, sa, local); }).then_wrapped([port, requested_port] (future<> f) {
                 try {
                     f.get();
                     return stop_iteration::yes;
@@ -380,7 +459,7 @@ class posix_socket_impl final : public socket_impl {
     }
 
 public:
-    explicit posix_socket_impl(compat::polymorphic_allocator<char>* allocator=memory::malloc_allocator) : _allocator(allocator) {}
+    explicit posix_socket_impl(std::pmr::polymorphic_allocator<char>* allocator=memory::malloc_allocator) : _allocator(allocator) {}
 
     virtual future<connected_socket> connect(socket_address sa, socket_address local, transport proto = transport::TCP) override {
         if (sa.is_af_unix()) {
@@ -396,13 +475,13 @@ public:
     void set_reuseaddr(bool reuseaddr) override {
         _reuseaddr = reuseaddr;
         if (_fd) {
-            _fd->get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, int(reuseaddr));
+            _fd.get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, int(reuseaddr));
         }
     }
 
     bool get_reuseaddr() const override {
         if(_fd) {
-            return _fd->get_file_desc().getsockopt<int>(SOL_SOCKET, SO_REUSEADDR);
+            return _fd.get_file_desc().getsockopt<int>(SOL_SOCKET, SO_REUSEADDR);
         } else {
             return _reuseaddr;
         }
@@ -411,7 +490,7 @@ public:
     virtual void shutdown() override {
         if (_fd) {
             try {
-                _fd->shutdown(SHUT_RDWR);
+                _fd.shutdown(SHUT_RDWR);
             } catch (std::system_error& e) {
                 if (e.code().value() != ENOTCONN) {
                     throw;
@@ -438,9 +517,9 @@ posix_server_socket_impl::accept() {
             }
         } ();
         auto cpu = cth.cpu();
-        if (cpu == engine().cpu_id()) {
+        if (cpu == this_shard_id()) {
             std::unique_ptr<connected_socket_impl> csi(
-                    new posix_connected_socket_impl(sa.family(), _protocol, make_lw_shared(std::move(fd)), std::move(cth), _allocator));
+                    new posix_connected_socket_impl(sa.family(), _protocol, std::move(fd), std::move(cth), _allocator));
             return make_ready_future<accept_result>(
                     accept_result{connected_socket(std::move(csi)), sa});
         } else {
@@ -455,11 +534,24 @@ posix_server_socket_impl::accept() {
 
 void
 posix_server_socket_impl::abort_accept() {
-    _lfd.abort_reader();
+    _lfd.shutdown(SHUT_RD, pollable_fd::shutdown_kernel_only::no);
 }
 
 socket_address posix_server_socket_impl::local_address() const {
     return _lfd.get_file_desc().get_address();
+}
+
+posix_ap_server_socket_impl::posix_ap_server_socket_impl(int protocol, socket_address sa, std::pmr::polymorphic_allocator<char>* allocator)
+        : _protocol(protocol), _sa(sa), _allocator(allocator)
+{
+    auto it = ports.emplace(std::make_tuple(_protocol, _sa));
+    if (!it.second) {
+        throw std::system_error(EADDRINUSE, std::system_category());
+    }
+}
+
+posix_ap_server_socket_impl::~posix_ap_server_socket_impl() {
+    ports.erase(std::make_tuple(_protocol, _sa));
 }
 
 future<accept_result> posix_ap_server_socket_impl::accept() {
@@ -470,7 +562,7 @@ future<accept_result> posix_ap_server_socket_impl::accept() {
         conn_q.erase(conni);
         try {
             std::unique_ptr<connected_socket_impl> csi(
-                    new posix_connected_socket_impl(_sa.family(), _protocol, make_lw_shared(std::move(c.fd)), std::move(c.connection_tracking_handle), _allocator));
+                    new posix_connected_socket_impl(_sa.family(), _protocol, std::move(c.fd), std::move(c.connection_tracking_handle), _allocator));
             return make_ready_future<accept_result>(accept_result{connected_socket(std::move(csi)), std::move(c.addr)});
         } catch (...) {
             return make_exception_future<accept_result>(std::current_exception());
@@ -503,7 +595,7 @@ posix_reuseport_server_socket_impl::accept() {
         auto& fd = std::get<0>(fd_sa);
         auto& sa = std::get<1>(fd_sa);
         std::unique_ptr<connected_socket_impl> csi(
-                new posix_connected_socket_impl(sa.family(), protocol, make_lw_shared(std::move(fd)), allocator));
+                new posix_connected_socket_impl(sa.family(), protocol, std::move(fd), allocator));
         return make_ready_future<accept_result>(
             accept_result{connected_socket(std::move(csi)), sa});
     });
@@ -511,7 +603,7 @@ posix_reuseport_server_socket_impl::accept() {
 
 void
 posix_reuseport_server_socket_impl::abort_accept() {
-    _lfd.abort_reader();
+    _lfd.shutdown(SHUT_RD, pollable_fd::shutdown_kernel_only::no);
 }
 
 socket_address posix_reuseport_server_socket_impl::local_address() const {
@@ -519,12 +611,12 @@ socket_address posix_reuseport_server_socket_impl::local_address() const {
 }
 
 void
-posix_ap_server_socket_impl::move_connected_socket(int protocol, socket_address sa, pollable_fd fd, socket_address addr, conntrack::handle cth, compat::polymorphic_allocator<char>* allocator) {
+posix_ap_server_socket_impl::move_connected_socket(int protocol, socket_address sa, pollable_fd fd, socket_address addr, conntrack::handle cth, std::pmr::polymorphic_allocator<char>* allocator) {
     auto t_sa = std::make_tuple(protocol, sa);
     auto i = sockets.find(t_sa);
     if (i != sockets.end()) {
         try {
-            std::unique_ptr<connected_socket_impl> csi(new posix_connected_socket_impl(sa.family(), protocol, make_lw_shared(std::move(fd)), std::move(cth), allocator));
+            std::unique_ptr<connected_socket_impl> csi(new posix_connected_socket_impl(sa.family(), protocol, std::move(fd), std::move(cth), allocator));
             i->second.set_value(accept_result{connected_socket(std::move(csi)), std::move(addr)});
         } catch (...) {
             i->second.set_exception(std::current_exception());
@@ -537,16 +629,25 @@ posix_ap_server_socket_impl::move_connected_socket(int protocol, socket_address 
 
 future<temporary_buffer<char>>
 posix_data_source_impl::get() {
-    return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
-        _buf.trim(size);
-        auto ret = std::move(_buf);
-        _buf = make_temporary_buffer<char>(_buffer_allocator, _buf_size);
-        return make_ready_future<temporary_buffer<char>>(std::move(ret));
+    return _fd.recv_some(static_cast<internal::buffer_allocator*>(this)).then([this] (temporary_buffer<char> b) {
+        if (b.size() >= _config.buffer_size) {
+            _config.buffer_size *= 2;
+            _config.buffer_size = std::min(_config.buffer_size, _config.max_buffer_size);
+        } else if (b.size() <= _config.buffer_size / 4) {
+            _config.buffer_size /= 2;
+            _config.buffer_size = std::max(_config.buffer_size, _config.min_buffer_size);
+        }
+        return b;
     });
 }
 
+temporary_buffer<char>
+posix_data_source_impl::allocate_buffer() {
+    return make_temporary_buffer<char>(_buffer_allocator, _config.buffer_size);
+}
+
 future<> posix_data_source_impl::close() {
-    _fd->shutdown(SHUT_RD);
+    _fd.shutdown(SHUT_RD);
     return make_ready_future<>();
 }
 
@@ -570,24 +671,32 @@ std::vector<iovec> to_iovec(std::vector<temporary_buffer<char>>& buf_vec) {
 
 future<>
 posix_data_sink_impl::put(temporary_buffer<char> buf) {
-    return _fd->write_all(buf.get(), buf.size()).then([d = buf.release()] {});
+    return _fd.write_all(buf.get(), buf.size()).then([d = buf.release()] {});
 }
 
 future<>
 posix_data_sink_impl::put(packet p) {
     _p = std::move(p);
-    return _fd->write_all(_p).then([this] { _p.reset(); });
+    return _fd.write_all(_p).then([this] { _p.reset(); });
 }
 
 future<>
 posix_data_sink_impl::close() {
-    _fd->shutdown(SHUT_WR);
+    _fd.shutdown(SHUT_WR);
     return make_ready_future<>();
+}
+
+void posix_data_sink_impl::on_batch_flush_error() noexcept {
+    shutdown_socket_fd(_fd, SHUT_RD);
+}
+
+posix_network_stack::posix_network_stack(const program_options::option_group& opts, std::pmr::polymorphic_allocator<char>* allocator)
+        : _reuseport(engine().posix_reuseport_available()), _allocator(allocator) {
 }
 
 server_socket
 posix_network_stack::listen(socket_address sa, listen_options opt) {
-    using server_socket = seastar::api_v2::server_socket;
+    using server_socket = seastar::server_socket;
     // allow unspecified bind address -> default to ipv4 wildcard
     if (sa.is_unspecified()) {
         sa = inet_address(inet_address::family::INET);
@@ -606,9 +715,13 @@ posix_network_stack::listen(socket_address sa, listen_options opt) {
     return ::seastar::socket(std::make_unique<posix_socket_impl>(_allocator));
 }
 
+posix_ap_network_stack::posix_ap_network_stack(const program_options::option_group& opts, std::pmr::polymorphic_allocator<char>* allocator)
+        : posix_network_stack(opts, allocator), _reuseport(engine().posix_reuseport_available()) {
+}
+
 server_socket
 posix_ap_network_stack::listen(socket_address sa, listen_options opt) {
-    using server_socket = seastar::api_v2::server_socket;
+    using server_socket = seastar::server_socket;
     // allow unspecified bind address -> default to ipv4 wildcard
     if (sa.is_unspecified()) {
         sa = inet_address(inet_address::family::INET);
@@ -631,7 +744,7 @@ struct cmsg_with_pktinfo {
     };
 };
 
-class posix_udp_channel : public udp_channel_impl {
+class posix_datagram_channel : public datagram_channel_impl {
 private:
     static constexpr int MAX_DATAGRAM_SIZE = 65507;
     struct recv_ctx {
@@ -641,16 +754,25 @@ private:
         char* _buffer;
         cmsg_with_pktinfo _cmsg;
 
-        recv_ctx() {
+        recv_ctx(bool use_pktinfo) {
             memset(&_hdr, 0, sizeof(_hdr));
             _hdr.msg_iov = &_iov;
             _hdr.msg_iovlen = 1;
             _hdr.msg_name = &_src_addr.u.sa;
             _hdr.msg_namelen = sizeof(_src_addr.u.sas);
-            memset(&_cmsg, 0, sizeof(_cmsg));
-            _hdr.msg_control = &_cmsg;
-            _hdr.msg_controllen = sizeof(_cmsg);
+
+            if (use_pktinfo) {
+                memset(&_cmsg, 0, sizeof(_cmsg));
+                _hdr.msg_control = &_cmsg;
+                _hdr.msg_controllen = sizeof(_cmsg);
+            } else {
+                _hdr.msg_control = nullptr;
+                _hdr.msg_controllen = 0;
+            }
         }
+
+        recv_ctx(const recv_ctx&) = delete;
+        recv_ctx(recv_ctx&&) = delete;
 
         void prepare() {
             _buffer = new char[MAX_DATAGRAM_SIZE];
@@ -667,11 +789,15 @@ private:
         send_ctx() {
             memset(&_hdr, 0, sizeof(_hdr));
             _hdr.msg_name = &_dst.u.sa;
-            _hdr.msg_namelen = sizeof(_dst.u.sas);
+            _hdr.msg_namelen = _dst.addr_length;
         }
+
+        send_ctx(const send_ctx&) = delete;
+        send_ctx(send_ctx&&) = delete;
 
         void prepare(const socket_address& dst, packet p) {
             _dst = dst;
+            _hdr.msg_namelen = _dst.addr_length;
             _p = std::move(p);
             _iovecs = to_iovec(_p);
             _hdr.msg_iov = _iovecs.data();
@@ -679,37 +805,65 @@ private:
             resolve_outgoing_address(_dst);
         }
     };
-    std::unique_ptr<pollable_fd> _fd;
+
+    static bool is_inet(sa_family_t family) {
+        return family == AF_INET || family == AF_INET6;
+    }
+
+    static file_desc create_socket(sa_family_t family) {
+        file_desc fd = file_desc::socket(family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+
+        if (is_inet(family)) {
+            fd.setsockopt(SOL_IP, IP_PKTINFO, true);
+            if (engine().posix_reuseport_available()) {
+                fd.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1);
+            }
+        }
+
+        return fd;
+    }
+
+    pollable_fd _fd;
     socket_address _address;
     recv_ctx _recv;
     send_ctx _send;
     bool _closed;
 public:
-    posix_udp_channel(const socket_address& bind_address)
-            : _closed(false) {
-        auto sa = bind_address.is_unspecified() ? socket_address(inet_address(inet_address::family::INET)) : bind_address;
-        file_desc fd = file_desc::socket(sa.u.sa.sa_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        fd.setsockopt(SOL_IP, IP_PKTINFO, true);
-        if (engine().posix_reuseport_available()) {
-            fd.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1);
-        }
-        fd.bind(sa.u.sa, sizeof(sa.u.sas));
+    /// Creates a channel that is not bound to any socket address. The channel
+    /// can be used to communicate with adressess that belong to the \param
+    /// family.
+    posix_datagram_channel(sa_family_t family)
+        : _recv(is_inet(family)), _closed(false) {
+        auto fd = create_socket(family);
+
         _address = fd.get_address();
-        _fd = std::make_unique<pollable_fd>(std::move(fd));
+        _fd = std::move(fd);
     }
-    virtual ~posix_udp_channel() { if (!_closed) close(); };
-    virtual future<udp_datagram> receive() override;
+
+    /// Creates a channel that is bound to the specified local address. It can be used to
+    /// communicate with addresses that belong to the family of \param local.
+    posix_datagram_channel(socket_address local)
+        : _recv(is_inet(local.family())), _closed(false) {
+        auto fd = create_socket(local.family());
+        fd.bind(local.u.sa, local.addr_length);
+
+        _address = fd.get_address();
+        _fd = std::move(fd);
+    }
+
+    virtual ~posix_datagram_channel() { if (!_closed) close(); };
+    virtual future<datagram> receive() override;
     virtual future<> send(const socket_address& dst, const char *msg) override;
     virtual future<> send(const socket_address& dst, packet p) override;
     virtual void shutdown_input() override {
-        _fd->abort_reader();
+        _fd.shutdown(SHUT_RD, pollable_fd::shutdown_kernel_only::no);
     }
     virtual void shutdown_output() override {
-        _fd->abort_writer();
+        _fd.shutdown(SHUT_WR, pollable_fd::shutdown_kernel_only::no);
     }
     virtual void close() override {
         _closed = true;
-        _fd.reset();
+        _fd = {};
     }
     virtual bool is_closed() const override { return _closed; }
     socket_address local_address() const override {
@@ -718,31 +872,47 @@ public:
     }
 };
 
-future<> posix_udp_channel::send(const socket_address& dst, const char *message) {
+future<> posix_datagram_channel::send(const socket_address& dst, const char *message) {
     auto len = strlen(message);
     auto a = dst;
     resolve_outgoing_address(a);
-    return _fd->sendto(a, message, len)
+    return _fd.sendto(a, message, len)
             .then([len] (size_t size) { assert(size == len); });
 }
 
-future<> posix_udp_channel::send(const socket_address& dst, packet p) {
+future<> posix_datagram_channel::send(const socket_address& dst, packet p) {
     auto len = p.len();
     _send.prepare(dst, std::move(p));
-    return _fd->sendmsg(&_send._hdr)
+    return _fd.sendmsg(&_send._hdr)
             .then([len] (size_t size) { assert(size == len); });
 }
 
 udp_channel
 posix_network_stack::make_udp_channel(const socket_address& addr) {
-    return udp_channel(std::make_unique<posix_udp_channel>(addr));
+    if (!addr.is_unspecified()) {
+        return make_bound_datagram_channel(addr);
+    } else {
+        // Preserve the default behavior of make_udp_channel({}) which is to
+        // create an unbound channel that can be used to send UDP datagrams.
+        return make_unbound_datagram_channel(AF_INET);
+    }
+}
+
+datagram_channel
+posix_network_stack::make_unbound_datagram_channel(sa_family_t family) {
+    return datagram_channel(std::make_unique<posix_datagram_channel>(family));
+}
+
+datagram_channel
+posix_network_stack::make_bound_datagram_channel(const socket_address& local) {
+    return datagram_channel(std::make_unique<posix_datagram_channel>(local));
 }
 
 bool
 posix_network_stack::supports_ipv6() const {
     static bool has_ipv6 = [] {
         try {
-            posix_udp_channel c(ipv6_addr{"::1"});
+            posix_datagram_channel c(ipv6_addr{"::1"});
             c.close();
             return true;
         } catch (...) {}
@@ -752,7 +922,7 @@ posix_network_stack::supports_ipv6() const {
     return has_ipv6;
 }
 
-class posix_datagram : public udp_datagram_impl {
+class posix_datagram : public datagram_impl {
 private:
     socket_address _src;
     socket_address _dst;
@@ -761,39 +931,45 @@ public:
     posix_datagram(const socket_address& src, const socket_address& dst, packet p) : _src(src), _dst(dst), _p(std::move(p)) {}
     virtual socket_address get_src() override { return _src; }
     virtual socket_address get_dst() override { return _dst; }
-    virtual uint16_t get_dst_port() override { return _dst.port(); }
+    virtual uint16_t get_dst_port() override {
+        if (_dst.family() != AF_INET && _dst.family() != AF_INET6) {
+            throw std::runtime_error(format("get_dst_port() called on non-IP address: {}", _dst));
+        }
+        return _dst.port();
+    }
     virtual packet& get_data() override { return _p; }
 };
 
-future<udp_datagram>
-posix_udp_channel::receive() {
+future<datagram>
+posix_datagram_channel::receive() {
     _recv.prepare();
-    return _fd->recvmsg(&_recv._hdr).then([this] (size_t size) {
-        socket_address dst;
+    return _fd.recvmsg(&_recv._hdr).then([this] (size_t size) {
+        std::optional<socket_address> dst;
         for (auto* cmsg = CMSG_FIRSTHDR(&_recv._hdr); cmsg != nullptr; cmsg = CMSG_NXTHDR(&_recv._hdr, cmsg)) {
             if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
-                dst = ipv4_addr(reinterpret_cast<const in_pktinfo*>(CMSG_DATA(cmsg))->ipi_addr, _address.port());
+                dst = ipv4_addr(copy_reinterpret_cast<in_pktinfo>(CMSG_DATA(cmsg)).ipi_addr, _address.port());
                 break;
             } else if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
-                dst = ipv6_addr(reinterpret_cast<const in6_pktinfo*>(CMSG_DATA(cmsg))->ipi6_addr, _address.port());
+                dst = ipv6_addr(copy_reinterpret_cast<in6_pktinfo>(CMSG_DATA(cmsg)).ipi6_addr, _address.port());
                 break;
             }
         }
-        return make_ready_future<udp_datagram>(udp_datagram(std::make_unique<posix_datagram>(
-            _recv._src_addr, dst, packet(fragment{_recv._buffer, size}, make_deleter([buf = _recv._buffer] { delete[] buf; })))));
+        return make_ready_future<datagram>(datagram(std::make_unique<posix_datagram>(
+            _recv._src_addr, dst ? *dst : _address, packet(fragment{_recv._buffer, size}, make_deleter([buf = _recv._buffer] { delete[] buf; })))));
     }).handle_exception([p = _recv._buffer](auto ep) {
         delete[] p;
-        return make_exception_future<udp_datagram>(std::move(ep));
+        return make_exception_future<datagram>(std::move(ep));
     });
 }
 
-void register_posix_stack() {
-    register_network_stack("posix", boost::program_options::options_description(),
-        [](boost::program_options::variables_map ops) {
+network_stack_entry register_posix_stack() {
+    return network_stack_entry{
+        "posix", std::make_unique<program_options::option_group>(nullptr, "Posix"),
+        [](const program_options::option_group& ops) {
             return smp::main_thread() ? posix_network_stack::create(ops)
                                       : posix_ap_network_stack::create(ops);
         },
-        true);
+        true};
 }
 
 // nw interface stuff
@@ -851,10 +1027,11 @@ std::vector<network_interface> posix_network_stack::network_interfaces() {
 
         auto pid = ::getpid();
 
-        sockaddr_nl local = { 0, };
-        local.nl_family = AF_NETLINK;
-        local.nl_pid = pid;
-        local.nl_groups = RTMGRP_IPV6_IFADDR|RTMGRP_IPV4_IFADDR;
+        sockaddr_nl local = {
+          .nl_family = AF_NETLINK,
+          .nl_pid = static_cast<unsigned int>(pid),
+          .nl_groups = RTMGRP_IPV6_IFADDR|RTMGRP_IPV4_IFADDR,
+        };
 
         throw_system_error_on(bind(fd, (struct sockaddr *) &local, sizeof(local)) < 0, "could not bind netlink socket");
 
@@ -869,12 +1046,7 @@ std::vector<network_interface> posix_network_stack::network_interfaces() {
                     rtgenmsg gen;
                     ifaddrmsg addr; 
                 }; 
-            } req = { {0}, };
-
-            sockaddr_nl kernel = { 0, }; 
-            msghdr rtnl_msg = { 0, };
-    
-            kernel.nl_family = AF_NETLINK; /* fill-in kernel address (destination of our message) */
+            } req = {};
 
             req.hdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtgenmsg));
             req.hdr.nlmsg_type = msg;
@@ -888,15 +1060,19 @@ std::vector<network_interface> posix_network_stack::network_interfaces() {
                 req.addr.ifa_family = AF_UNSPEC;
             }
 
-            iovec io;
-
-            io.iov_base = &req;
-            io.iov_len = req.hdr.nlmsg_len;
-
-            rtnl_msg.msg_iov = &io;
-            rtnl_msg.msg_iovlen = 1;
-            rtnl_msg.msg_name = &kernel;
-            rtnl_msg.msg_namelen = sizeof(kernel);
+            sockaddr_nl kernel = {
+              .nl_family = AF_NETLINK, /* fill-in kernel address (destination of our message) */
+            };
+            iovec io = {
+              .iov_base = &req,
+              .iov_len = req.hdr.nlmsg_len,
+            };
+            msghdr rtnl_msg = {
+              .msg_name = &kernel,
+              .msg_namelen = sizeof(kernel),
+              .msg_iov = &io,
+              .msg_iovlen = 1,
+            };
 
             throw_system_error_on(::sendmsg(fd, (struct msghdr *) &rtnl_msg, 0) < 0, "could not send netlink request");
             /* parse reply */
@@ -907,15 +1083,16 @@ std::vector<network_interface> posix_network_stack::network_interfaces() {
             bool done = false;
 
             while (!done) {
-                msghdr rtnl_reply = { 0, };
-                iovec io_reply = { 0, };
-
-                io_reply.iov_base = reply;
-                io_reply.iov_len = reply_buffer_size;
-                rtnl_reply.msg_iov = &io_reply;
-                rtnl_reply.msg_iovlen = 1;
-                rtnl_reply.msg_name = &kernel;
-                rtnl_reply.msg_namelen = sizeof(kernel);
+                iovec io_reply = {
+                  .iov_base = reply,
+                  .iov_len = reply_buffer_size,
+                };
+                msghdr rtnl_reply = {
+                  .msg_name = &kernel,
+                  .msg_namelen = sizeof(kernel),
+                  .msg_iov = &io_reply,
+                  .msg_iovlen = 1,
+                };
 
                 auto len = ::recvmsg(fd, &rtnl_reply, 0); /* read as much data as fits in the receive buffer */
                 if (len <= 0) {
@@ -970,7 +1147,7 @@ std::vector<network_interface> posix_network_stack::network_interfaces() {
                         for (auto& nwif : res) {
                             if (nwif._index == addr->ifa_index) {
                                 for (auto* attribute = IFA_RTA(addr); RTA_OK(attribute, ilen); attribute = RTA_NEXT(attribute, ilen)) {
-                                    compat::optional<inet_address> ia;
+                                    std::optional<inet_address> ia;
                                     
                                     switch(attribute->rta_type) {
                                     case IFA_LOCAL:
@@ -995,6 +1172,8 @@ std::vector<network_interface> posix_network_stack::network_interfaces() {
                                 break;
                             }
                         }
+
+                        break;
                     }
                     default:
                         break;

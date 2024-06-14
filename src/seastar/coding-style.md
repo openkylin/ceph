@@ -14,7 +14,7 @@ An _indent_ is four spaces. A double indent is eight spaces, a half-indent is tw
 
 ## Naming
 
-We follow the C++ and Boost naming conventions: class names, variables, and functions are `words_separated_by_whitespace`.
+We follow the C++ and Boost naming conventions: class names, variables, functions, and concepts are `words_separated_by_whitespace`.
 
 Private data members are prefixed by an underscore:
 
@@ -30,7 +30,11 @@ public:
 
 Think of the leading underscore as a shorthand for `this->`.
 
-Template parameters and concepts use `CamelCase`
+Template parameters use `CamelCase`
+
+Note: because the Concept Technical Specification used CamelCase for concepts,
+some Seastar concepts alse use CamelCase. These will be gradually deprecated
+and replaced with snake_case names. New concepts should use snake_case.
 
 ## Including header files
 
@@ -45,6 +49,8 @@ In any private file, to include a private header file (one in the `src` director
 ```c++
 #include "core/future_impl.hh"
 ```
+
+Header files in Seastar must be self-contained, i.e., each can be included without having to include specific other headers first. To verify that your change did not break this property, run `ninja checkheaders` in the build directory.
 
 ## Braced blocks
 

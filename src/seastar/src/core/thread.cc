@@ -19,11 +19,26 @@
 /*
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
+#ifdef SEASTAR_MODULE
+module;
+#endif
 
+#include <ucontext.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <valgrind/valgrind.h>
+#include <algorithm>
+#include <exception>
+#include <utility>
+#include <boost/intrusive/list.hpp>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/thread.hh>
 #include <seastar/core/posix.hh>
-#include <ucontext.h>
-#include <algorithm>
+#include <seastar/core/reactor.hh>
+#endif
 
 /// \cond internal
 
@@ -150,22 +165,25 @@ inline void jmp_buf_link::final_switch_out()
 
 // Both asan and optimizations can increase the stack used by a
 // function. When both are used, we need more than 128 KiB.
-#if defined(__OPTIMIZE__) && defined(SEASTAR_ASAN_ENABLED)
+#if defined(SEASTAR_ASAN_ENABLED)
 static constexpr size_t base_stack_size = 256 * 1024;
 #else
 static constexpr size_t base_stack_size = 128 * 1024;
 #endif
 
-#ifdef SEASTAR_THREAD_STACK_GUARDS
-static const size_t stack_size = base_stack_size + getpagesize();
+static size_t get_stack_size(thread_attributes attr) {
+#if defined(__OPTIMIZE__) && defined(SEASTAR_ASAN_ENABLED)
+    return std::max(base_stack_size, attr.stack_size);
 #else
-static const size_t stack_size = base_stack_size;
+    return attr.stack_size ? attr.stack_size : base_stack_size;
 #endif
+}
 
 thread_context::thread_context(thread_attributes attr, noncopyable_function<void ()> func)
         : task(attr.sched_group.value_or(current_scheduling_group()))
+        , _stack(make_stack(get_stack_size(attr)))
         , _func(std::move(func)) {
-    setup();
+    setup(get_stack_size(attr));
     _all_threads.push_front(*this);
 }
 
@@ -177,8 +195,10 @@ thread_context::~thread_context() {
     _all_threads.erase(_all_threads.iterator_to(*this));
 }
 
+thread_context::stack_deleter::stack_deleter(int valgrind_id) : valgrind_id(valgrind_id) {}
+
 thread_context::stack_holder
-thread_context::make_stack() {
+thread_context::make_stack(size_t stack_size) {
 #ifdef SEASTAR_THREAD_STACK_GUARDS
     size_t page_size = getpagesize();
     size_t alignment = page_size;
@@ -189,7 +209,8 @@ thread_context::make_stack() {
     if (mem == nullptr) {
         throw std::bad_alloc();
     }
-    auto stack = stack_holder(new (mem) char[stack_size]);
+    int valgrind_id = VALGRIND_STACK_REGISTER(mem, reinterpret_cast<char*>(mem) + stack_size);
+    auto stack = stack_holder(new (mem) char[stack_size], stack_deleter(valgrind_id));
 #ifdef SEASTAR_ASAN_ENABLED
     // Avoid ASAN false positive due to garbage on stack
     std::fill_n(stack.get(), stack_size, 0);
@@ -204,11 +225,12 @@ thread_context::make_stack() {
 }
 
 void thread_context::stack_deleter::operator()(char* ptr) const noexcept {
+    VALGRIND_STACK_DEREGISTER(valgrind_id);
     free(ptr);
 }
 
 void
-thread_context::setup() {
+thread_context::setup(size_t stack_size) {
     // use setcontext() for the initial jump, as it allows us
     // to set up a stack, but continue with longjmp() as it's
     // much faster.
@@ -227,6 +249,7 @@ thread_context::setup() {
 
 void
 thread_context::switch_in() {
+    local_engine->_current_task = nullptr; // thread_wake_task is on the stack and will be invalid when we resume
     _context.switch_in();
 }
 
@@ -275,6 +298,8 @@ thread_context::main() {
     asm(".cfi_undefined lr");
 #elif defined(__aarch64__)
     asm(".cfi_undefined x30");
+#elif defined(__s390x__)
+    asm(".cfi_undefined %r14");
 #else
     #warning "Backtracing from seastar threads may be broken"
 #endif

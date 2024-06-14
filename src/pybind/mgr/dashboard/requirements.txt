@@ -1,14 +1,15 @@
 bcrypt
 CherryPy
-enum34; python_version<'3.4'
 more-itertools
-PyJWT
 pyopenssl
-python3-saml
 requests
 Routes
-six
 -e ../../../python-common
 prettytable
 pytest
 pyyaml
+natsort
+setuptools
+jsonpatch
+grpcio==1.46.5
+grpcio-tools==1.46.5

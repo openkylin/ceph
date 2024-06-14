@@ -23,19 +23,27 @@
 
 #ifdef SEASTAR_DEBUG_SHARED_PTR
 
+#ifndef SEASTAR_MODULE
 #include <thread>
 #include <cassert>
 
+#include <seastar/core/on_internal_error.hh>
+#include <seastar/util/modules.hh>
+#endif
+
 namespace seastar {
+
+extern logger seastar_logger;
 
 // A counter that is only comfortable being incremented on the cpu
 // it was created on.  Useful for verifying that a shared_ptr
 // or lw_shared_ptr isn't misued across cores.
+SEASTAR_MODULE_EXPORT
 class debug_shared_ptr_counter_type {
     long _counter = 0;
     std::thread::id _cpu = std::this_thread::get_id();
 public:
-    debug_shared_ptr_counter_type(long x) : _counter(x) {}
+    debug_shared_ptr_counter_type(long x) noexcept : _counter(x) {}
     operator long() const {
         check();
         return _counter;
@@ -60,7 +68,9 @@ public:
     }
 private:
     void check() const {
-        assert(_cpu == std::this_thread::get_id());
+        if (__builtin_expect(_cpu != std::this_thread::get_id(), false)) {
+            on_fatal_internal_error(seastar_logger, "shared_ptr accessed on non-owner cpu");
+        }
     }
 };
 

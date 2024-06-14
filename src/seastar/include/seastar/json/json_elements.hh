@@ -21,17 +21,25 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <string>
 #include <vector>
 #include <time.h>
 #include <sstream>
+#endif
+
+#include <seastar/core/do_with.hh>
+#include <seastar/core/loop.hh>
 #include <seastar/json/formatter.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
 namespace json {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /**
  * The base class for all json element.
@@ -42,30 +50,33 @@ namespace json {
  * this is not a valid object
  */
 class json_base_element {
-public:
+protected:
     /**
      * The constructors
      */
-    json_base_element()
+    json_base_element() noexcept
             : _mandatory(false), _set(false) {
     }
 
-    virtual ~json_base_element() = default;
+    json_base_element(const json_base_element& o) noexcept = default;
+    json_base_element& operator=(const json_base_element& o) noexcept {
+        // Names and mandatory are never changed after creation
+        _set = o._set;
+        return *this;
+    }
 
+    json_base_element(json_base_element&&) = delete;
+    json_base_element& operator=(json_base_element&&) = delete;
+public:
+    virtual ~json_base_element() = default;
     /**
      * Check if it's a mandatory parameter
      * and if it's set.
      * @return true if this is not a mandatory parameter
      * or if it is and it's value is set
      */
-    virtual bool is_verify() {
+    virtual bool is_verify() noexcept {
         return !(_mandatory && !_set);
-    }
-
-    json_base_element& operator=(const json_base_element& o) {
-        // Names and mandatory are never changed after creation
-        _set = o._set;
-        return *this;
     }
 
     /**
@@ -118,7 +129,7 @@ public:
      * The brackets operator
      * @return the value
      */
-    const T& operator()() const {
+    const T& operator()() const noexcept {
         return _value;
     }
 
@@ -183,6 +194,9 @@ public:
 
 class jsonable {
 public:
+    jsonable() = default;
+    jsonable(const jsonable&) = default;
+    jsonable& operator=(const jsonable&) = default;
     virtual ~jsonable() = default;
     /**
      * create a foramted string of the object.
@@ -295,10 +309,15 @@ struct json_return_type {
    json_return_type(json_return_type&& o) noexcept : _res(std::move(o._res)), _body_writer(std::move(o._body_writer)) {
    }
     json_return_type& operator=(json_return_type&& o) noexcept {
-        _res = std::move(o._res);
-        _body_writer = std::move(o._body_writer);
+        if (this != &o) {
+            _res = std::move(o._res);
+            _body_writer = std::move(o._body_writer);
+        }
         return *this;
     }
+
+    json_return_type(const json_return_type&) = default;
+    json_return_type& operator=(const json_return_type&) = default;
 };
 
 /*!
@@ -310,9 +329,9 @@ struct json_return_type {
  * return make_ready_future<json::json_return_type>(stream_range_as_array(res, [](const auto&i) {return i.first}));
  */
 template<typename Container, typename Func>
-GCC6_CONCEPT( requires requires (Container c, Func aa, output_stream<char> s) { { formatter::write(s, aa(*c.begin())) } -> future<>; } )
+SEASTAR_CONCEPT( requires requires (Container c, Func aa, output_stream<char> s) { { formatter::write(s, aa(*c.begin())) } -> std::same_as<future<>>; } )
 std::function<future<>(output_stream<char>&&)> stream_range_as_array(Container val, Func fun) {
-    return [val = std::move(val), fun = std::move(fun)](output_stream<char>&& s) {
+    return [val = std::move(val), fun = std::move(fun)](output_stream<char>&& s) mutable {
         return do_with(output_stream<char>(std::move(s)), Container(std::move(val)), Func(std::move(fun)), true, [](output_stream<char>& s, const Container& val, const Func& f, bool& first){
             return s.write("[").then([&val, &s, &first, &f] () {
                 return do_for_each(val, [&s, &first, &f](const typename Container::value_type& v){
@@ -323,9 +342,9 @@ std::function<future<>(output_stream<char>&&)> stream_range_as_array(Container v
                     });
                 });
             }).then([&s](){
-                return s.write("]").then([&s] {
-                    return s.close();
-                });
+                return s.write("]");
+            }).finally([&s] {
+                return s.close();
             });
         });
     };
@@ -339,15 +358,16 @@ std::function<future<>(output_stream<char>&&)> stream_range_as_array(Container v
  */
 template<class T>
 std::function<future<>(output_stream<char>&&)> stream_object(T val) {
-    return [val = std::move(val)](output_stream<char>&& s) {
+    return [val = std::move(val)](output_stream<char>&& s) mutable {
         return do_with(output_stream<char>(std::move(s)), T(std::move(val)), [](output_stream<char>& s, const T& val){
-            return formatter::write(s, val).then([&s] {
+            return formatter::write(s, val).finally([&s] {
                 return s.close();
             });
         });
     };
 }
 
+SEASTAR_MODULE_EXPORT_END
 }
 
 }

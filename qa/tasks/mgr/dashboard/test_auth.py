@@ -8,7 +8,7 @@ import jwt
 from teuthology.orchestra.run import \
     CommandFailedError  # pylint: disable=import-error
 
-from .helper import DashboardTestCase, JObj, JLeaf
+from .helper import DashboardTestCase, JLeaf, JObj
 
 
 class AuthTest(DashboardTestCase):
@@ -91,15 +91,6 @@ class AuthTest(DashboardTestCase):
             "detail": "Invalid credentials"
         })
 
-        # test with Cookies set
-        self._post("/api/auth", {'username': 'admin', 'password': 'inval'}, set_cookies=True)
-        self.assertStatus(400)
-        self.assertJsonBody({
-            "component": "auth",
-            "code": "invalid_credentials",
-            "detail": "Invalid credentials"
-        })
-
     def test_lockout_user(self):
         # test with Authorization header
         self._ceph_cmd(['dashboard', 'set-account-lockout-attempts', '3'])
@@ -163,7 +154,7 @@ class AuthTest(DashboardTestCase):
         self.assertJsonBody({
             "redirect_url": "#/login"
         })
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(401)
         self.set_jwt_token(None)
 
@@ -178,7 +169,7 @@ class AuthTest(DashboardTestCase):
         self.assertJsonBody({
             "redirect_url": "#/login"
         })
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(401)
         self.set_jwt_token(None)
 
@@ -188,10 +179,10 @@ class AuthTest(DashboardTestCase):
         self._post("/api/auth", {'username': 'admin', 'password': 'admin'})
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(200)
         time.sleep(6)
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(401)
         self._ceph_cmd(['dashboard', 'set-jwt-token-ttl', '28800'])
         self.set_jwt_token(None)
@@ -201,24 +192,24 @@ class AuthTest(DashboardTestCase):
         self._post("/api/auth", {'username': 'admin', 'password': 'admin'}, set_cookies=True)
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(200)
         time.sleep(6)
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(401)
         self._ceph_cmd(['dashboard', 'set-jwt-token-ttl', '28800'])
         self.set_jwt_token(None)
 
-    def test_remove_from_blacklist(self):
+    def test_remove_from_blocklist(self):
         # test with Authorization header
         self._ceph_cmd(['dashboard', 'set-jwt-token-ttl', '5'])
         self._post("/api/auth", {'username': 'admin', 'password': 'admin'})
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        # the following call adds the token to the blacklist
+        # the following call adds the token to the blocklist
         self._post("/api/auth/logout")
         self.assertStatus(200)
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(401)
         time.sleep(6)
         self._ceph_cmd(['dashboard', 'set-jwt-token-ttl', '28800'])
@@ -226,7 +217,7 @@ class AuthTest(DashboardTestCase):
         self._post("/api/auth", {'username': 'admin', 'password': 'admin'})
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        # the following call removes expired tokens from the blacklist
+        # the following call removes expired tokens from the blocklist
         self._post("/api/auth/logout")
         self.assertStatus(200)
 
@@ -238,7 +229,7 @@ class AuthTest(DashboardTestCase):
         # the following call adds the token to the blocklist
         self._post("/api/auth/logout", set_cookies=True)
         self.assertStatus(200)
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(401)
         time.sleep(6)
         self._ceph_cmd(['dashboard', 'set-jwt-token-ttl', '28800'])
@@ -252,61 +243,61 @@ class AuthTest(DashboardTestCase):
 
     def test_unauthorized(self):
         # test with Authorization header
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(401)
 
         # test with Cookies set
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(401)
 
     def test_invalidate_token_by_admin(self):
         # test with Authorization header
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(401)
         self.create_user('user', 'user', ['read-only'])
         time.sleep(1)
         self._post("/api/auth", {'username': 'user', 'password': 'user'})
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(200)
         time.sleep(1)
         self._ceph_cmd_with_secret(['dashboard', 'ac-user-set-password', '--force-password',
                                     'user'],
                                    'user2')
         time.sleep(1)
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(401)
         self.set_jwt_token(None)
         self._post("/api/auth", {'username': 'user', 'password': 'user2'})
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        self._get("/api/host")
+        self._get("/api/host", version='1.1')
         self.assertStatus(200)
         self.delete_user("user")
 
         # test with Cookies set
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(401)
         self.create_user('user', 'user', ['read-only'])
         time.sleep(1)
         self._post("/api/auth", {'username': 'user', 'password': 'user'}, set_cookies=True)
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(200)
         time.sleep(1)
         self._ceph_cmd_with_secret(['dashboard', 'ac-user-set-password', '--force-password',
                                     'user'],
                                    'user2')
         time.sleep(1)
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(401)
         self.set_jwt_token(None)
         self._post("/api/auth", {'username': 'user', 'password': 'user2'}, set_cookies=True)
         self.assertStatus(201)
         self.set_jwt_token(self.jsonBody()['token'])
-        self._get("/api/host", set_cookies=True)
+        self._get("/api/host", set_cookies=True, version='1.1')
         self.assertStatus(200)
         self.delete_user("user")
 
@@ -344,7 +335,8 @@ class AuthTest(DashboardTestCase):
         self.assertStatus(200)
         data = self.jsonBody()
         self.assertSchema(data, JObj(sub_elems={
-            "login_url": JLeaf(str)
+            "login_url": JLeaf(str),
+            "cluster_status": JLeaf(str)
         }, allow_unknown=False))
         self.logout()
 
@@ -354,6 +346,7 @@ class AuthTest(DashboardTestCase):
         self.assertStatus(200)
         data = self.jsonBody()
         self.assertSchema(data, JObj(sub_elems={
-            "login_url": JLeaf(str)
+            "login_url": JLeaf(str),
+            "cluster_status": JLeaf(str)
         }, allow_unknown=False))
         self.logout(set_cookies=True)

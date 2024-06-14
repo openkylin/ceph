@@ -10,7 +10,6 @@
 #include "include/rbd/object_map_types.h"
 #include "common/AsyncOpTracker.h"
 #include "common/bit_vector.hpp"
-#include "common/RWLock.h"
 #include "common/RefCountedObj.h"
 #include "librbd/Utils.h"
 #include <boost/optional.hpp>
@@ -44,6 +43,12 @@ public:
   inline uint64_t size() const {
     std::shared_lock locker{m_lock};
     return m_object_map.size();
+  }
+
+  template <typename F, typename... Args>
+  auto with_object_map(F&& f, Args&&... args) const {
+    std::shared_lock locker(m_lock);
+    return std::forward<F>(f)(m_object_map, std::forward<Args>(args)...);
   }
 
   inline void set_state(uint64_t object_no, uint8_t new_state,

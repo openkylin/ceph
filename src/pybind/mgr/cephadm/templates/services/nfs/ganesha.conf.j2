@@ -3,14 +3,13 @@ NFS_CORE_PARAM {
         Enable_NLM = false;
         Enable_RQUOTA = false;
         Protocols = 4;
-}
-
-MDCACHE {
-        Dir_Chunk = 0;
-}
-
-EXPORT_DEFAULTS {
-        Attr_Expiration_Time = 0;
+        NFS_Port = {{ port }};
+{% if bind_addr %}
+        Bind_addr = {{ bind_addr }};
+{% endif %}
+{% if haproxy_hosts %}
+        HAProxy_Hosts = {{ haproxy_hosts|join(", ") }};
+{% endif %}
 }
 
 NFSv4 {
@@ -21,7 +20,7 @@ NFSv4 {
 
 RADOS_KV {
         UserId = "{{ user }}";
-        nodeid = "{{ nodeid}}";
+        nodeid = "{{ nodeid }}";
         pool = "{{ pool }}";
         namespace = "{{ namespace }}";
 }

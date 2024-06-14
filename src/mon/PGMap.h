@@ -66,6 +66,18 @@ public:
       decode(up_not_acting, p);
       decode(primary, p);
     }
+    void dump(ceph::Formatter *f) const {
+      f->dump_int("acting", acting);
+      f->dump_int("up_not_acting", up_not_acting);
+      f->dump_int("primary", primary);
+    }
+    static void generate_test_instances(std::list<pg_count*>& o) {
+      o.push_back(new pg_count);
+      o.push_back(new pg_count);
+      o.back()->acting = 1;
+      o.back()->up_not_acting = 2;
+      o.back()->primary = 3;
+    }
   };
   mempool::pgmap::unordered_map<int32_t,pg_count> num_pg_by_osd;
 
@@ -197,7 +209,7 @@ public:
   }
 
   ceph_statfs get_statfs(OSDMap &osdmap,
-                         boost::optional<int64_t> data_pool) const;
+                         std::optional<int64_t> data_pool) const;
 
   int64_t get_rule_avail(int ruleno) const {
     auto i = avail_space_by_rule.find(ruleno);
@@ -359,7 +371,8 @@ public:
   static const int STUCK_UNDERSIZED = (1<<2);
   static const int STUCK_DEGRADED = (1<<3);
   static const int STUCK_STALE = (1<<4);
-  
+  static const int STUCK_PEERING = (1<<5);
+
   PGMap()
     : version(0),
       last_osdmap_epoch(0), last_pg_scan(0)
@@ -439,11 +452,12 @@ public:
   int64_t get_rule_avail(const OSDMap& osdmap, int ruleno) const;
   void get_rules_avail(const OSDMap& osdmap,
 		       std::map<int,int64_t> *avail_map) const;
-  void dump(ceph::Formatter *f, bool with_net = true) const;
+  void dump(ceph::Formatter *f, bool with_net = false) const;
   void dump_basic(ceph::Formatter *f) const;
   void dump_pg_stats(ceph::Formatter *f, bool brief) const;
+  void dump_pg_progress(ceph::Formatter *f) const;
   void dump_pool_stats(ceph::Formatter *f) const;
-  void dump_osd_stats(ceph::Formatter *f, bool with_net = true) const;
+  void dump_osd_stats(ceph::Formatter *f, bool with_net = false) const;
   void dump_osd_ping_times(ceph::Formatter *f) const;
   void dump_delta(ceph::Formatter *f) const;
   void dump_filtered_pg_stats(ceph::Formatter *f, std::set<pg_t>& pgs) const;
@@ -460,14 +474,13 @@ public:
   void dump_pool_stats_and_io_rate(int64_t poolid, const OSDMap &osd_map, ceph::Formatter *f,
 				   std::stringstream *ss) const;
 
-  void dump_pg_stats_plain(
+  static void dump_pg_stats_plain(
     std::ostream& ss,
     const mempool::pgmap::unordered_map<pg_t, pg_stat_t>& pg_stats,
-    bool brief) const;
+    bool brief);
   void get_stuck_stats(
     int types, const utime_t cutoff,
     mempool::pgmap::unordered_map<pg_t, pg_stat_t>& stuck_pgs) const;
-  bool get_stuck_counts(const utime_t cutoff, std::map<std::string, int>& note) const;
   void dump_stuck(ceph::Formatter *f, int types, utime_t cutoff) const;
   void dump_stuck_plain(std::ostream& ss, int types, utime_t cutoff) const;
   int dump_stuck_pg_stats(std::stringstream &ds,
@@ -492,12 +505,12 @@ public:
   void get_filtered_pg_stats(uint64_t state, int64_t poolid, int64_t osdid,
                              bool primary, std::set<pg_t>& pgs) const;
 
-  set<std::string> osd_parentage(const OSDMap& osdmap, int id) const;
+  std::set<std::string> osd_parentage(const OSDMap& osdmap, int id) const;
   void get_health_checks(
     CephContext *cct,
     const OSDMap& osdmap,
     health_check_map_t *checks) const;
-  void print_summary(ceph::Formatter *f, ostream *out) const;
+  void print_summary(ceph::Formatter *f, std::ostream *out) const;
 
   static void generate_test_instances(std::list<PGMap*>& o);
 };

@@ -24,35 +24,22 @@
 #include "common/bit_str.h"
 #include "common/ceph_releases.h"
 
-#define PAXOS_MDSMAP     0
-#define PAXOS_OSDMAP     1
-#define PAXOS_LOG        2
-#define PAXOS_MONMAP     3
-#define PAXOS_AUTH       4
-#define PAXOS_MGR        5
-#define PAXOS_MGRSTAT    6
-#define PAXOS_HEALTH     7
-#define PAXOS_CONFIG     8
-#define PAXOS_NUM        9
-
-inline const char *get_paxos_name(int p) {
-  switch (p) {
-  case PAXOS_MDSMAP: return "mdsmap";
-  case PAXOS_MONMAP: return "monmap";
-  case PAXOS_OSDMAP: return "osdmap";
-  case PAXOS_LOG: return "logm";
-  case PAXOS_AUTH: return "auth";
-  case PAXOS_MGR: return "mgr";
-  case PAXOS_MGRSTAT: return "mgrstat";
-  case PAXOS_HEALTH: return "health";
-  case PAXOS_CONFIG: return "config";
-  default: ceph_abort(); return 0;
-  }
-}
+// use as paxos_service index
+enum {
+  PAXOS_MDSMAP,
+  PAXOS_OSDMAP,
+  PAXOS_LOG,
+  PAXOS_MONMAP,
+  PAXOS_AUTH,
+  PAXOS_MGR,
+  PAXOS_MGRSTAT,
+  PAXOS_HEALTH,
+  PAXOS_CONFIG,
+  PAXOS_KV,
+  PAXOS_NUM
+};
 
 #define CEPH_MON_ONDISK_MAGIC "ceph mon volume v012"
-
-extern const std::string CONFIG_PREFIX;
 
 // map of entity_type -> features -> count
 struct FeatureMap {
@@ -123,25 +110,29 @@ struct FeatureMap {
       f->close_section();
     }
   }
+
+  static void generate_test_instances(std::list<FeatureMap*>& ls) {
+    ls.push_back(new FeatureMap);
+    ls.push_back(new FeatureMap);
+    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_UID);
+    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_NOSRCADDR);
+    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_PGID64);
+    ls.back()->add(CEPH_ENTITY_TYPE_OSD, CEPH_FEATURE_INCSUBOSDMAP);
+  }
 };
 WRITE_CLASS_ENCODER(FeatureMap)
 
 /**
- * leveldb store stats
- *
- * If we ever decide to support multiple backends for the monitor store,
- * we should then create an abstract class 'MonitorStoreStats' of sorts
- * and inherit it on LevelDBStoreStats.  I'm sure you'll figure something
- * out.
+ * monitor db store stats
  */
-struct LevelDBStoreStats {
+struct MonitorDBStoreStats {
   uint64_t bytes_total;
   uint64_t bytes_sst;
   uint64_t bytes_log;
   uint64_t bytes_misc;
   utime_t last_update;
 
-  LevelDBStoreStats() :
+  MonitorDBStoreStats() :
     bytes_total(0),
     bytes_sst(0),
     bytes_log(0),
@@ -177,9 +168,9 @@ struct LevelDBStoreStats {
     DECODE_FINISH(p);
   }
 
-  static void generate_test_instances(std::list<LevelDBStoreStats*>& ls) {
-    ls.push_back(new LevelDBStoreStats);
-    ls.push_back(new LevelDBStoreStats);
+  static void generate_test_instances(std::list<MonitorDBStoreStats*>& ls) {
+    ls.push_back(new MonitorDBStoreStats);
+    ls.push_back(new MonitorDBStoreStats);
     ls.back()->bytes_total = 1024*1024;
     ls.back()->bytes_sst = 512*1024;
     ls.back()->bytes_log = 256*1024;
@@ -187,7 +178,7 @@ struct LevelDBStoreStats {
     ls.back()->last_update = utime_t();
   }
 };
-WRITE_CLASS_ENCODER(LevelDBStoreStats)
+WRITE_CLASS_ENCODER(MonitorDBStoreStats)
 
 // data stats
 
@@ -195,7 +186,7 @@ struct DataStats {
   ceph_data_stats_t fs_stats;
   // data dir
   utime_t last_update;
-  LevelDBStoreStats store_stats;
+  MonitorDBStoreStats store_stats;
 
   void dump(ceph::Formatter *f) const {
     ceph_assert(f != NULL);
@@ -207,6 +198,20 @@ struct DataStats {
     f->open_object_section("store_stats");
     store_stats.dump(f);
     f->close_section();
+  }
+  static void generate_test_instances(std::list<DataStats*>& ls) {
+    ls.push_back(new DataStats);
+    ls.push_back(new DataStats);
+    ls.back()->fs_stats.byte_total = 1024*1024;
+    ls.back()->fs_stats.byte_used = 512*1024;
+    ls.back()->fs_stats.byte_avail = 256*1024;
+    ls.back()->fs_stats.avail_percent = 50;
+    ls.back()->last_update = utime_t();
+    ls.back()->store_stats.bytes_total = 1024*1024;
+    ls.back()->store_stats.bytes_sst = 512*1024;
+    ls.back()->store_stats.bytes_log = 256*1024;
+    ls.back()->store_stats.bytes_misc = 256*1024;
+    ls.back()->store_stats.last_update = utime_t();
   }
 
   void encode(ceph::buffer::list &bl) const {
@@ -485,6 +490,14 @@ public:
     decode(features, p);
     DECODE_FINISH(p);
   }
+
+  static void generate_test_instances(std::list<mon_feature_t*>& ls) {
+    ls.push_back(new mon_feature_t);
+    ls.push_back(new mon_feature_t);
+    ls.back()->features = 1;
+    ls.push_back(new mon_feature_t);
+    ls.back()->features = 2;
+  }
 };
 WRITE_CLASS_ENCODER(mon_feature_t)
 
@@ -497,6 +510,12 @@ namespace ceph {
       constexpr mon_feature_t FEATURE_OSDMAP_PRUNE (1ULL << 3);
       constexpr mon_feature_t FEATURE_NAUTILUS(    (1ULL << 4));
       constexpr mon_feature_t FEATURE_OCTOPUS(    (1ULL << 5));
+      constexpr mon_feature_t FEATURE_PACIFIC(    (1ULL << 6));
+      // elector pinging and CONNECTIVITY mode:
+      constexpr mon_feature_t FEATURE_PINGING(    (1ULL << 7));
+      constexpr mon_feature_t FEATURE_QUINCY(     (1ULL << 8));
+      constexpr mon_feature_t FEATURE_REEF(       (1ULL << 9));
+      constexpr mon_feature_t FEATURE_SQUID(      (1ULL << 10));
 
       constexpr mon_feature_t FEATURE_RESERVED(   (1ULL << 63));
       constexpr mon_feature_t FEATURE_NONE(       (0ULL));
@@ -514,6 +533,11 @@ namespace ceph {
           FEATURE_OSDMAP_PRUNE |
 	  FEATURE_NAUTILUS |
 	  FEATURE_OCTOPUS |
+	  FEATURE_PACIFIC |
+	  FEATURE_PINGING |
+	  FEATURE_QUINCY |
+	  FEATURE_REEF |
+	  FEATURE_SQUID |
 	  FEATURE_NONE
 	  );
       }
@@ -535,6 +559,11 @@ namespace ceph {
 	  FEATURE_NAUTILUS |
 	  FEATURE_OSDMAP_PRUNE |
 	  FEATURE_OCTOPUS |
+	  FEATURE_PACIFIC |
+	  FEATURE_PINGING |
+	  FEATURE_QUINCY |
+	  FEATURE_REEF |
+	  FEATURE_SQUID |
 	  FEATURE_NONE
 	  );
       }
@@ -553,6 +582,18 @@ namespace ceph {
 
 static inline ceph_release_t infer_ceph_release_from_mon_features(mon_feature_t f)
 {
+  if (f.contains_all(ceph::features::mon::FEATURE_SQUID)) {
+    return ceph_release_t::squid;
+  }
+  if (f.contains_all(ceph::features::mon::FEATURE_REEF)) {
+    return ceph_release_t::reef;
+  }
+  if (f.contains_all(ceph::features::mon::FEATURE_QUINCY)) {
+    return ceph_release_t::quincy;
+  }
+  if (f.contains_all(ceph::features::mon::FEATURE_PACIFIC)) {
+    return ceph_release_t::pacific;
+  }
   if (f.contains_all(ceph::features::mon::FEATURE_OCTOPUS)) {
     return ceph_release_t::octopus;
   }
@@ -584,8 +625,18 @@ static inline const char *ceph::features::mon::get_feature_name(uint64_t b) {
     return "osdmap-prune";
   } else if (f == FEATURE_NAUTILUS) {
     return "nautilus";
+  } else if (f == FEATURE_PINGING) {
+    return "elector-pinging";
   } else if (f == FEATURE_OCTOPUS) {
     return "octopus";
+  } else if (f == FEATURE_PACIFIC) {
+    return "pacific";
+  } else if (f == FEATURE_QUINCY) {
+    return "quincy";
+  } else if (f == FEATURE_REEF) {
+    return "reef";
+  } else if (f == FEATURE_SQUID) {
+    return "squid";
   } else if (f == FEATURE_RESERVED) {
     return "reserved";
   }
@@ -604,8 +655,18 @@ inline mon_feature_t ceph::features::mon::get_feature_by_name(const std::string 
     return FEATURE_OSDMAP_PRUNE;
   } else if (n == "nautilus") {
     return FEATURE_NAUTILUS;
+  } else if (n == "feature-pinging") {
+    return FEATURE_PINGING;
   } else if (n == "octopus") {
     return FEATURE_OCTOPUS;
+  } else if (n == "pacific") {
+    return FEATURE_PACIFIC;
+  } else if (n == "quincy") {
+    return FEATURE_QUINCY;
+  } else if (n == "reef") {
+    return FEATURE_REEF;
+  } else if (n == "squid") {
+    return FEATURE_SQUID;
   } else if (n == "reserved") {
     return FEATURE_RESERVED;
   }
@@ -622,23 +683,39 @@ inline std::ostream& operator<<(std::ostream& out, const mon_feature_t& f) {
 
 struct ProgressEvent {
   std::string message;                  ///< event description
-  float progress;                  ///< [0..1]
-
+  float progress = 0.0f;                  ///< [0..1]
+  bool add_to_ceph_s = false;
   void encode(ceph::buffer::list& bl) const {
-    ENCODE_START(1, 1, bl);
+    ENCODE_START(2, 1, bl);
     encode(message, bl);
     encode(progress, bl);
+    encode(add_to_ceph_s, bl);
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator& p) {
-    DECODE_START(1, p);
+    DECODE_START(2, p);
     decode(message, p);
     decode(progress, p);
+    if (struct_v >= 2){
+	decode(add_to_ceph_s, p);
+    } else {
+      if (!message.empty()) {
+	add_to_ceph_s = true;
+      }
+    }
     DECODE_FINISH(p);
   }
   void dump(ceph::Formatter *f) const {
     f->dump_string("message", message);
     f->dump_float("progress", progress);
+    f->dump_bool("add_to_ceph_s", add_to_ceph_s);
+  }
+  static void generate_test_instances(std::list<ProgressEvent*>& o) {
+    o.push_back(new ProgressEvent);
+    o.push_back(new ProgressEvent);
+    o.back()->message = "test message";
+    o.back()->progress = 0.5;
+    o.back()->add_to_ceph_s = true;
   }
 };
 WRITE_CLASS_ENCODER(ProgressEvent)

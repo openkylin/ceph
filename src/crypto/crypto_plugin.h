@@ -20,9 +20,10 @@
 #include "ostream"
 
 #include "crypto/crypto_accel.h"
+#include <boost/asio/io_context.hpp>
 // -----------------------------------------------------------------------------
 
-class CryptoPlugin : public Plugin {
+class CryptoPlugin : public ceph::Plugin {
 
 public:
   CryptoAccelRef cryptoaccel;
@@ -31,6 +32,8 @@ public:
   ~CryptoPlugin()
   {}
   virtual int factory(CryptoAccelRef *cs,
-                      std::ostream *ss) = 0;
+                      std::ostream *ss,
+                      const size_t chunk_size,
+                      const size_t max_requests) = 0;
 };
 #endif

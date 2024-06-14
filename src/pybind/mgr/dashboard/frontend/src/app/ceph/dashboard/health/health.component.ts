@@ -1,21 +1,24 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Subscription } from 'rxjs';
+import { take } from 'rxjs/operators';
 
-import { HealthService } from '../../../shared/api/health.service';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { Permissions } from '../../../shared/models/permissions';
-import { DimlessBinaryPipe } from '../../../shared/pipes/dimless-binary.pipe';
-import { DimlessPipe } from '../../../shared/pipes/dimless.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { PgCategoryService } from '~/app/ceph/shared/pg-category.service';
+import { HealthService } from '~/app/shared/api/health.service';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { CssHelper } from '~/app/shared/classes/css-helper';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { OsdSettings } from '~/app/shared/models/osd-settings';
+import { Permissions } from '~/app/shared/models/permissions';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { DimlessPipe } from '~/app/shared/pipes/dimless.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import {
   FeatureTogglesMap$,
   FeatureTogglesService
-} from '../../../shared/services/feature-toggles.service';
-import { RefreshIntervalService } from '../../../shared/services/refresh-interval.service';
-import { PgCategoryService } from '../../shared/pg-category.service';
+} from '~/app/shared/services/feature-toggles.service';
+import { RefreshIntervalService } from '~/app/shared/services/refresh-interval.service';
 
 @Component({
   selector: 'cd-health',
@@ -24,26 +27,15 @@ import { PgCategoryService } from '../../shared/pg-category.service';
 })
 export class HealthComponent implements OnInit, OnDestroy {
   healthData: any;
+  osdSettings = new OsdSettings();
   interval = new Subscription();
   permissions: Permissions;
   enabledFeature$: FeatureTogglesMap$;
   icons = Icons;
+  color: string;
 
-  clientStatsConfig = {
-    colors: [
-      {
-        backgroundColor: ['--color-cyan', '--color-purple']
-      }
-    ]
-  };
-
-  rawCapacityChartConfig = {
-    colors: [
-      {
-        backgroundColor: ['--color-blue', '--color-gray']
-      }
-    ]
-  };
+  clientStatsConfig: any = {};
+  rawCapacityChartConfig: any = {};
 
   pgStatusChartConfig = {
     options: {
@@ -53,23 +45,51 @@ export class HealthComponent implements OnInit, OnDestroy {
 
   constructor(
     private healthService: HealthService,
-    private i18n: I18n,
+    private osdService: OsdService,
     private authStorageService: AuthStorageService,
     private pgCategoryService: PgCategoryService,
     private featureToggles: FeatureTogglesService,
     private refreshIntervalService: RefreshIntervalService,
     private dimlessBinary: DimlessBinaryPipe,
-    private dimless: DimlessPipe
+    private dimless: DimlessPipe,
+    private cssHelper: CssHelper
   ) {
     this.permissions = this.authStorageService.getPermissions();
     this.enabledFeature$ = this.featureToggles.get();
   }
 
   ngOnInit() {
-    this.getHealth();
+    this.clientStatsConfig = {
+      dataset: [
+        {
+          backgroundColor: [
+            this.cssHelper.propertyValue('chart-color-cyan'),
+            this.cssHelper.propertyValue('chart-color-purple')
+          ]
+        }
+      ]
+    };
+
+    this.rawCapacityChartConfig = {
+      dataset: [
+        {
+          backgroundColor: [
+            this.cssHelper.propertyValue('chart-color-blue'),
+            this.cssHelper.propertyValue('chart-color-gray')
+          ]
+        }
+      ]
+    };
     this.interval = this.refreshIntervalService.intervalData$.subscribe(() => {
       this.getHealth();
     });
+
+    this.osdService
+      .getOsdSettings()
+      .pipe(take(1))
+      .subscribe((data: any) => {
+        this.osdSettings = data;
+      });
   }
 
   ngOnDestroy() {
@@ -90,21 +110,21 @@ export class HealthComponent implements OnInit, OnDestroy {
       this.healthData.client_perf.write_op_per_sec + this.healthData.client_perf.read_op_per_sec;
 
     ratioLabels.push(
-      `${this.i18n(`Reads`)}: ${this.dimless.transform(
+      `${$localize`Reads`}: ${this.dimless.transform(
         this.healthData.client_perf.read_op_per_sec
-      )} ${this.i18n(`/s`)}`
+      )} ${$localize`/s`}`
     );
     ratioData.push(this.calcPercentage(this.healthData.client_perf.read_op_per_sec, total));
     ratioLabels.push(
-      `${this.i18n(`Writes`)}: ${this.dimless.transform(
+      `${$localize`Writes`}: ${this.dimless.transform(
         this.healthData.client_perf.write_op_per_sec
-      )} ${this.i18n(`/s`)}`
+      )} ${$localize`/s`}`
     );
     ratioData.push(this.calcPercentage(this.healthData.client_perf.write_op_per_sec, total));
 
     chart.labels = ratioLabels;
     chart.dataset[0].data = ratioData;
-    chart.dataset[0].label = `${this.dimless.transform(total)}\n${this.i18n(`IOPS`)}`;
+    chart.dataset[0].label = `${this.dimless.transform(total)}\n${$localize`IOPS`}`;
   }
 
   prepareClientThroughput(chart: Record<string, any>) {
@@ -115,23 +135,23 @@ export class HealthComponent implements OnInit, OnDestroy {
       this.healthData.client_perf.read_bytes_sec + this.healthData.client_perf.write_bytes_sec;
 
     ratioLabels.push(
-      `${this.i18n(`Reads`)}: ${this.dimlessBinary.transform(
+      `${$localize`Reads`}: ${this.dimlessBinary.transform(
         this.healthData.client_perf.read_bytes_sec
-      )}${this.i18n(`/s`)}`
+      )}${$localize`/s`}`
     );
     ratioData.push(this.calcPercentage(this.healthData.client_perf.read_bytes_sec, total));
     ratioLabels.push(
-      `${this.i18n(`Writes`)}: ${this.dimlessBinary.transform(
+      `${$localize`Writes`}: ${this.dimlessBinary.transform(
         this.healthData.client_perf.write_bytes_sec
-      )}${this.i18n(`/s`)}`
+      )}${$localize`/s`}`
     );
     ratioData.push(this.calcPercentage(this.healthData.client_perf.write_bytes_sec, total));
 
     chart.labels = ratioLabels;
     chart.dataset[0].data = ratioData;
-    chart.dataset[0].label = `${this.dimlessBinary.transform(total).replace(' ', '\n')}${this.i18n(
-      `/s`
-    )}`;
+    chart.dataset[0].label = `${this.dimlessBinary
+      .transform(total)
+      .replace(' ', '\n')}${$localize`/s`}`;
   }
 
   prepareRawUsage(chart: Record<string, any>, data: Record<string, any>) {
@@ -144,11 +164,25 @@ export class HealthComponent implements OnInit, OnDestroy {
       data.df.stats.total_bytes
     );
 
+    const nearfullRatio = this.osdSettings.nearfull_ratio;
+    const fullRatio = this.osdSettings.nearfull_ratio;
+
+    if (nearfullRatio >= 0 && percentUsed / 100 >= nearfullRatio) {
+      this.color = 'chart-color-red';
+    } else if (fullRatio >= 0 && percentUsed / 100 >= fullRatio) {
+      this.color = 'chart-color-yellow';
+    } else {
+      this.color = 'chart-color-blue';
+    }
+    this.rawCapacityChartConfig.dataset[0].backgroundColor[0] = this.cssHelper.propertyValue(
+      this.color
+    );
+
     chart.dataset[0].data = [percentUsed, percentAvailable];
 
     chart.labels = [
-      `${this.i18n(`Used`)}: ${this.dimlessBinary.transform(data.df.stats.total_used_raw_bytes)}`,
-      `${this.i18n(`Avail.`)}: ${this.dimlessBinary.transform(
+      `${$localize`Used`}: ${this.dimlessBinary.transform(data.df.stats.total_used_raw_bytes)}`,
+      `${$localize`Avail.`}: ${this.dimlessBinary.transform(
         data.df.stats.total_bytes - data.df.stats.total_used_raw_bytes
       )}`
     ];
@@ -183,13 +217,13 @@ export class HealthComponent implements OnInit, OnDestroy {
       .map((categoryType) => this.calcPercentage(categoryPgAmount[categoryType], totalPgs));
 
     chart.labels = [
-      `${this.i18n(`Clean`)}: ${this.dimless.transform(categoryPgAmount['clean'])}`,
-      `${this.i18n(`Working`)}: ${this.dimless.transform(categoryPgAmount['working'])}`,
-      `${this.i18n(`Warning`)}: ${this.dimless.transform(categoryPgAmount['warning'])}`,
-      `${this.i18n(`Unknown`)}: ${this.dimless.transform(categoryPgAmount['unknown'])}`
+      `${$localize`Clean`}: ${this.dimless.transform(categoryPgAmount['clean'])}`,
+      `${$localize`Working`}: ${this.dimless.transform(categoryPgAmount['working'])}`,
+      `${$localize`Warning`}: ${this.dimless.transform(categoryPgAmount['warning'])}`,
+      `${$localize`Unknown`}: ${this.dimless.transform(categoryPgAmount['unknown'])}`
     ];
 
-    chart.dataset[0].label = `${totalPgs}\n${this.i18n(`PGs`)}`;
+    chart.dataset[0].label = `${totalPgs}\n${$localize`PGs`}`;
   }
 
   prepareObjects(chart: Record<string, any>, data: Record<string, any>) {
@@ -214,10 +248,10 @@ export class HealthComponent implements OnInit, OnDestroy {
     );
 
     chart.labels = [
-      `${this.i18n(`Healthy`)}: ${healthyPercentage}%`,
-      `${this.i18n(`Misplaced`)}: ${misplacedPercentage}%`,
-      `${this.i18n(`Degraded`)}: ${degradedPercentage}%`,
-      `${this.i18n(`Unfound`)}: ${unfoundPercentage}%`
+      `${$localize`Healthy`}: ${healthyPercentage}%`,
+      `${$localize`Misplaced`}: ${misplacedPercentage}%`,
+      `${$localize`Degraded`}: ${degradedPercentage}%`,
+      `${$localize`Unfound`}: ${unfoundPercentage}%`
     ];
 
     chart.dataset[0].data = [
@@ -229,7 +263,7 @@ export class HealthComponent implements OnInit, OnDestroy {
 
     chart.dataset[0].label = `${this.dimless.transform(
       data.pg_info.object_stats.num_objects
-    )}\n${this.i18n(`objects`)}`;
+    )}\n${$localize`objects`}`;
   }
 
   isClientReadWriteChartShowable() {
@@ -244,6 +278,6 @@ export class HealthComponent implements OnInit, OnDestroy {
       return 0;
     }
 
-    return Math.round((dividend / divisor) * 100);
+    return Math.ceil((dividend / divisor) * 100 * 100) / 100;
   }
 }

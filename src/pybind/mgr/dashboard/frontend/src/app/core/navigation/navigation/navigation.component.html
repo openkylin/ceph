@@ -3,18 +3,18 @@
   <cd-telemetry-notification></cd-telemetry-notification>
   <cd-motd></cd-motd>
   <cd-notifications-sidebar></cd-notifications-sidebar>
-
   <div class="cd-navbar-top">
     <nav class="navbar navbar-expand-md navbar-dark cd-navbar-brand">
       <button class="btn btn-link py-0"
-              (click)="showMenuSidebar = !showMenuSidebar">
-        <i class="fa fa-bars fa-2x"
+              (click)="showMenuSidebar = !showMenuSidebar"
+              aria-label="toggle sidebar visibility">
+        <i [ngClass]="[icons.bars, icons.large2x]"
            aria-hidden="true"></i>
       </button>
 
-      <a class="navbar-brand ml-2"
+      <a class="navbar-brand ms-2"
          href="#">
-        <img src="assets/Ceph_Logo_Standard_RGB_White_120411_fa.png"
+        <img src="assets/Ceph_Ceph_Logo_with_text_white.svg"
              alt="Ceph" />
       </a>
 
@@ -23,8 +23,8 @@
               (click)="toggleRightSidebar()">
         <span i18n
               class="sr-only">Toggle navigation</span>
-        <span class="">
-          <i class="fa fa-navicon fa-lg"></i>
+        <span>
+          <i [ngClass]="[icons.navicon, icons.large]"></i>
         </span>
       </button>
 
@@ -74,16 +74,21 @@
     </li>
   </ng-template>
 
-  <ng-template #cd_menu >
+  <ng-template #cd_menu>
     <ng-container *ngIf="enabledFeature$ | async as enabledFeature">
       <!-- Dashboard -->
       <li routerLinkActive="active"
           class="nav-item tc_menuitem_dashboard">
         <a routerLink="/dashboard"
            class="nav-link">
-          <span i18n>Dashboard</span>&nbsp;
-          <i [ngClass]="[icons.health]"
-             [ngStyle]="summaryData?.health_status | healthColor"></i>
+          <span i18n>
+            <i [ngClass]="[icons.areaChart]"></i>
+            Dashboard</span>
+          <i
+            *ngIf="summaryData?.health_status !== 'HEALTH_OK'"
+            [ngClass]="[icons.circle]"
+            [ngStyle]="summaryData?.health_status | healthColor">
+          </i>
         </a>
       </li>
 
@@ -91,28 +96,49 @@
       <li routerLinkActive="active"
           class="nav-item tc_menuitem_cluster"
           *ngIf="permissions.hosts.read || permissions.monitor.read ||
-          permissions.osd.read || permissions.configOpt.read ||
-          permissions.log.read || permissions.prometheus.read">
+          permissions.osd.read || permissions.pool.read">
         <a (click)="toggleSubMenu('cluster')"
            class="nav-link dropdown-toggle"
-           [attr.aria-expanded]="displayedSubMenu == 'cluster'"
-           aria-controls="collapseBasic">
-          <ng-container i18n>Cluster</ng-container>
+           [attr.aria-expanded]="displayedSubMenu.cluster"
+           aria-controls="cluster-nav"
+           role="button">
+          <ng-container i18n>
+            <i [ngClass]="[icons.sitemap]"></i>
+            Cluster
+          </ng-container>
         </a>
         <ul class="list-unstyled"
-            [collapse]="displayedSubMenu !== 'cluster'"
-            [isAnimated]="true">
+            id="cluster-nav"
+            [ngbCollapse]="!displayedSubMenu.cluster">
           <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_hosts"
+              class="tc_submenuitem tc_submenuitem_cluster_pool"
+              *ngIf="permissions.pool.read">
+            <a i18n
+               routerLink="/pool">Pools</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_cluster_hosts"
               *ngIf="permissions.hosts.read">
             <a i18n
                routerLink="/hosts">Hosts</a>
           </li>
           <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_cluster_osds"
+              *ngIf="permissions.osd.read">
+            <a i18n
+               routerLink="/osd">OSDs</a>
+          </li>
+          <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_cluster_inventory"
               *ngIf="permissions.hosts.read">
             <a i18n
-               routerLink="/inventory">Inventory</a>
+               routerLink="/inventory">Physical Disks</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_cluster_crush"
+              *ngIf="permissions.osd.read">
+            <a i18n
+               routerLink="/crush-map">CRUSH map</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_cluster_monitor"
@@ -120,79 +146,29 @@
             <a i18n
                routerLink="/monitor/">Monitors</a>
           </li>
-          <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_cluster_services"
-              *ngIf="permissions.hosts.read">
-            <a i18n
-               routerLink="/services/">Services</a>
-          </li>
-          <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_osds"
-              *ngIf="permissions.osd.read">
-            <a i18n
-               routerLink="/osd">OSDs</a>
-          </li>
-          <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_configuration"
-              *ngIf="permissions.configOpt.read">
-            <a i18n
-               routerLink="/configuration">Configuration</a>
-          </li>
-          <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_crush"
-              *ngIf="permissions.osd.read">
-            <a i18n
-               routerLink="/crush-map">CRUSH map</a>
-          </li>
-          <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_modules"
-              *ngIf="permissions.configOpt.read">
-            <a i18n
-               routerLink="/mgr-modules">Manager Modules</a>
-          </li>
-          <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_log"
-              *ngIf="permissions.log.read">
-            <a i18n
-               routerLink="/logs">Logs</a>
-          </li>
-          <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_monitoring"
-              *ngIf="permissions.prometheus.read">
-            <a routerLink="/monitoring">
-              <ng-container i18n>Monitoring</ng-container>
-              <small *ngIf="prometheusAlertService.activeAlerts > 0"
-                     class="badge badge-danger">{{ prometheusAlertService.activeAlerts }}</small>
-            </a>
-          </li>
         </ul>
       </li>
 
-      <!-- Pools -->
-      <li routerLinkActive="active"
-          class="nav-item tc_menuitem_pool"
-          *ngIf="permissions.pool.read">
-        <a class="nav-link"
-           i18n
-           routerLink="/pool">Pools</a>
-      </li>
-
-      <!-- Block -->
+      <!-- Block Storage -->
       <li routerLinkActive="active"
           class="nav-item tc_menuitem_block"
           *ngIf="(permissions.rbdImage.read || permissions.rbdMirroring.read || permissions.iscsi.read) &&
           (enabledFeature.rbd || enabledFeature.mirroring || enabledFeature.iscsi)">
         <a class="nav-link dropdown-toggle"
            (click)="toggleSubMenu('block')"
-           [attr.aria-expanded]="displayedSubMenu == 'block'"
-           aria-controls="collapseBasic"
+           [attr.aria-expanded]="displayedSubMenu.block"
+           aria-controls="block-nav"
+           role="button"
            [ngStyle]="blockHealthColor()">
-          <ng-container i18n>Block</ng-container>
+          <ng-container i18n>
+            <i [ngClass]="[icons.database]"></i>
+            Block
+          </ng-container>
         </a>
 
         <ul class="list-unstyled"
-            [collapse]="displayedSubMenu !== 'block'"
-            [isAnimated]="true">
+            id="block-nav"
+            [ngbCollapse]="!displayedSubMenu.block">
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_block_images"
               *ngIf="permissions.rbdImage.read && enabledFeature.rbd">
@@ -221,41 +197,32 @@
         </ul>
       </li>
 
-      <!-- NFS -->
-      <li routerLinkActive="active"
-          class="nav-item tc_menuitem_nfs"
-          *ngIf="permissions.nfs.read && enabledFeature.nfs">
-        <a i18n
-           class="nav-link"
-           routerLink="/nfs">NFS</a>
-      </li>
-
-      <!-- Filesystem -->
-      <li routerLinkActive="active"
-          class="nav-item tc_menuitem_cephfs"
-          *ngIf="permissions.cephfs.read && enabledFeature.cephfs">
-        <a i18n
-           class="nav-link"
-           routerLink="/cephfs">Filesystems</a>
-      </li>
-
-      <!-- Object Gateway -->
+      <!-- Object Storage -->
       <li routerLinkActive="active"
           class="nav-item tc_menuitem_rgw"
           *ngIf="permissions.rgw.read && enabledFeature.rgw">
         <a class="nav-link dropdown-toggle"
-           (click)="toggleSubMenu('rgw')"
-           [attr.aria-expanded]="displayedSubMenu == 'rgw'"
-           aria-controls="collapseBasic">
-          <ng-container i18n>Object Gateway</ng-container>
+           (click)="toggleSubMenu('object')"
+           [attr.aria-expanded]="displayedSubMenu.object"
+           aria-controls="gateway-nav"
+           role="button">
+          <ng-container i18n>
+            <i [ngClass]="[icons.cubes]"></i>
+            Object
+          </ng-container>
         </a>
         <ul class="list-unstyled"
-            [collapse]="displayedSubMenu !== 'rgw'"
-            [isAnimated]="true">
+            id="gateway-nav"
+            [ngbCollapse]="!displayedSubMenu.object">
           <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_rgw_daemons">
+              class="tc_submenuitem tc_submenuitem_rgw_overview">
             <a i18n
-               routerLink="/rgw/daemon">Daemons</a>
+               routerLink="/rgw/overview">Overview</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_rgw_buckets">
+            <a i18n
+               routerLink="/rgw/bucket">Buckets</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_rgw_users">
@@ -265,7 +232,141 @@
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_rgw_buckets">
             <a i18n
-               routerLink="/rgw/bucket">Buckets</a>
+               routerLink="/rgw/multisite">Multi-site</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_rgw_daemons">
+            <a i18n
+               routerLink="/rgw/daemon">Gateways</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_rgw_nfs"
+              *ngIf="permissions.nfs.read && enabledFeature.nfs">
+            <a i18n
+               class="nav-link"
+               routerLink="/nfs">NFS</a>
+          </li>
+        </ul>
+      </li>
+
+      <!-- Filesystem -->
+      <li routerLinkActive="active"
+          class="nav-item tc_menuitem_file"
+          *ngIf="permissions.nfs.read && enabledFeature.nfs
+          || permissions.cephfs.read && enabledFeature.cephfs">
+        <a class="nav-link dropdown-toggle"
+           (click)="toggleSubMenu('file')"
+           [attr.aria-expanded]="displayedSubMenu.file"
+           aria-controls="filesystem-nav"
+           role="button">
+          <ng-container i18n>
+            <i [ngClass]="[icons.text]"></i>
+            File
+          </ng-container>
+        </a>
+        <ul class="list-unstyled"
+            id="filesystem-nav"
+            [ngbCollapse]="!displayedSubMenu.file">
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_file_cephfs"
+              *ngIf="permissions.cephfs.read && enabledFeature.cephfs">
+            <a i18n
+               class="nav-link"
+               routerLink="/cephfs">File Systems</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_file_nfs"
+              *ngIf="permissions.nfs.read && enabledFeature.nfs">
+            <a i18n
+               class="nav-link"
+               routerLink="/nfs">NFS</a>
+          </li>
+        </ul>
+      </li>
+
+
+      <!-- Observability -->
+      <li routerLinkActive="active"
+          class="nav-item tc_menuitem_observe"
+          *ngIf="permissions.log.read || permissions.prometheus.read">
+        <a class="nav-link dropdown-toggle"
+           (click)="toggleSubMenu('observe')"
+           [attr.aria-expanded]="displayedSubMenu.observe"
+           aria-controls="observe-nav"
+           role="button">
+          <ng-container i18n>
+            <i [ngClass]="[icons.eye]"></i>
+            Observability
+          </ng-container>
+        </a>
+        <ul class="list-unstyled"
+            id="observe-nav"
+            [ngbCollapse]="!displayedSubMenu.observe">
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_observe_log"
+              *ngIf="permissions.log.read">
+            <a i18n
+               routerLink="/logs">Logs</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_observe_monitoring"
+              *ngIf="permissions.prometheus.read">
+            <a routerLink="/monitoring">
+              <ng-container i18n>Alerts</ng-container>
+              <small *ngIf="prometheusAlertService.activeCriticalAlerts > 0"
+                     class="badge badge-danger ms-1">{{ prometheusAlertService.activeCriticalAlerts }}</small>
+              <small *ngIf="prometheusAlertService.activeWarningAlerts > 0"
+                     class="badge badge-warning ms-1">{{ prometheusAlertService.activeWarningAlerts }}</small>
+            </a>
+          </li>
+        </ul>
+      </li>
+      <li routerLinkActive="active"
+          class="nav-item tc_menuitem_admin"
+          *ngIf="permissions.configOpt.read ||
+          permissions.hosts.read">
+        <a class="nav-link dropdown-toggle"
+           (click)="toggleSubMenu('admin')"
+           [attr.aria-expanded]="displayedSubMenu.admin"
+           aria-controls="admin-nav"
+           role="button">
+          <ng-container i18n>
+            <i [ngClass]="[icons.cogs]"></i>
+            Administration
+          </ng-container>
+        </a>
+        <ul class="list-unstyled"
+            id="admin-nav"
+            [ngbCollapse]="!displayedSubMenu.admin">
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_admin_services"
+              *ngIf="permissions.hosts.read">
+            <a i18n
+               routerLink="/services/">Services</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_admin_upgrade"
+              *ngIf="permissions.configOpt.read">
+            <a i18n
+               routerLink="/upgrade">Upgrade</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_admin_users"
+              *ngIf="permissions.configOpt.read">
+            <a i18n
+               routerLink="/ceph-users">Ceph Users</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_admin_modules"
+              *ngIf="permissions.configOpt.read">
+            <a i18n
+               routerLink="/mgr-modules">Manager Modules</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_admin_configuration"
+              *ngIf="permissions.configOpt.read">
+            <a i18n
+               routerLink="/configuration">Configuration</a>
           </li>
         </ul>
       </li>

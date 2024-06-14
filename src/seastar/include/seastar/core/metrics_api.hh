@@ -22,12 +22,17 @@
 #pragma once
 
 #include <seastar/core/metrics.hh>
-#include <unordered_map>
+#include <seastar/util/modules.hh>
 #include <seastar/core/sharded.hh>
+#ifndef SEASTAR_MODULE
 #include <boost/functional/hash.hpp>
+#endif
+
+#include <deque>
+
 /*!
  * \file metrics_api.hh
- * \brief header file for metric API layer (like promehteus or collectd)
+ * \brief header file for metric API layer (like prometheus or collectd)
  *
  *
  *
@@ -60,6 +65,26 @@ struct hash<seastar::metrics::impl::labels_type> {
 
 namespace seastar {
 namespace metrics {
+
+SEASTAR_MODULE_EXPORT
+struct relabel_config;
+
+/*!
+ * \brief result of metric relabeling
+ *
+ * The result of calling set_relabel_configs.
+ *
+ * metrics_relabeled_due_to_collision the number of metrics that caused conflict
+ * and were relabeled to avoid name collision.
+ *
+ * Non zero value indicates there were name collisions.
+ *
+ */
+SEASTAR_MODULE_EXPORT
+struct metric_relabeling_result {
+    size_t metrics_relabeled_due_to_collision;
+};
+
 namespace impl {
 
 /**
@@ -101,10 +126,10 @@ public:
     const metric_name_type & name() const {
         return _name;
     }
-    const metrics::metric_type_def & inherit_type() const {
-        return _labels.at(type_label.name());
-    }
     const labels_type& labels() const {
+        return _labels;
+    }
+    labels_type& labels() {
         return _labels;
     }
     sstring full_name() const;
@@ -113,8 +138,7 @@ public:
     bool operator==(const metric_id&) const;
 private:
     auto as_tuple() const {
-        return std::tie(group_name(), instance_id(), name(),
-                    inherit_type(), labels());
+        return std::tie(group_name(), instance_id(), name(), labels());
     }
     group_name_type _group;
     metric_name_type _name;
@@ -153,8 +177,10 @@ namespace impl {
  */
 struct metric_family_info {
     data_type type;
+    metric_type_def inherit_type;
     description d;
     sstring name;
+    std::vector<std::string> aggregate_labels;
 };
 
 
@@ -163,7 +189,9 @@ struct metric_family_info {
  */
 struct metric_info {
     metric_id id;
+    labels_type original_labels;
     bool enabled;
+    skip_when_empty should_skip_when_empty;
 };
 
 
@@ -183,14 +211,13 @@ public:
 
 class impl;
 
-class registered_metric {
+class registered_metric final {
     metric_info _info;
     metric_function _f;
     shared_ptr<impl> _impl;
 public:
-    registered_metric(metric_id id, metric_function f, bool enabled=true);
-    virtual ~registered_metric() {}
-    virtual metric_value operator()() const {
+    registered_metric(metric_id id, metric_function f, bool enabled=true, skip_when_empty skip=skip_when_empty::no);
+    metric_value operator()() const {
         return _f();
     }
 
@@ -201,7 +228,9 @@ public:
     void set_enabled(bool b) {
         _info.enabled = b;
     }
-
+    void set_skip_when_empty(skip_when_empty skip) noexcept {
+        _info.should_skip_when_empty = skip;
+    }
     const metric_id& get_id() const {
         return _info.id;
     }
@@ -209,7 +238,10 @@ public:
     const metric_info& info() const {
         return _info;
     }
-    metric_function& get_function() {
+    metric_info& info() {
+        return _info;
+   }
+    const metric_function& get_function() const {
         return _f;
     }
 };
@@ -291,7 +323,7 @@ public:
 
 using value_map = std::map<sstring, metric_family>;
 
-using metric_metadata_vector = std::vector<metric_info>;
+using metric_metadata_fifo = std::deque<metric_info>;
 
 /*!
  * \brief holds a metric family metadata
@@ -302,12 +334,12 @@ using metric_metadata_vector = std::vector<metric_info>;
  */
 struct metric_family_metadata {
     metric_family_info mf;
-    metric_metadata_vector metrics;
+    metric_metadata_fifo metrics;
 };
 
 using value_vector = std::vector<metric_value>;
 using metric_metadata = std::vector<metric_family_metadata>;
-using metric_values = std::vector<value_vector>;
+using metric_values = std::deque<value_vector>;
 
 struct values_copy {
     shared_ptr<metric_metadata> metadata;
@@ -323,7 +355,9 @@ class impl {
     config _config;
     bool _dirty = true;
     shared_ptr<metric_metadata> _metadata;
-    std::vector<std::vector<metric_function>> _current_metrics;
+    std::set<sstring> _labels;
+    std::vector<std::deque<metric_function>> _current_metrics;
+    std::vector<relabel_config> _relabel_configs;
 public:
     value_map& get_value_map() {
         return _value_map;
@@ -333,7 +367,7 @@ public:
         return _value_map;
     }
 
-    void add_registration(const metric_id& id, data_type type, metric_function f, const description& d, bool enabled);
+    void add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, skip_when_empty skip, const std::vector<std::string>& aggregate_labels);
     void remove_registration(const metric_id& id);
     future<> stop() {
         return make_ready_future<>();
@@ -347,12 +381,22 @@ public:
 
     shared_ptr<metric_metadata> metadata();
 
-    std::vector<std::vector<metric_function>>& functions();
+    std::vector<std::deque<metric_function>>& functions();
 
     void update_metrics_if_needed();
 
     void dirty() {
         _dirty = true;
+    }
+
+    const std::set<sstring>& get_labels() const noexcept {
+        return _labels;
+    }
+
+    future<metric_relabeling_result> set_relabel_configs(const std::vector<relabel_config>& relabel_configs);
+
+    const std::vector<relabel_config>& get_relabel_configs() const noexcept {
+        return _relabel_configs;
     }
 };
 
@@ -374,16 +418,73 @@ void unregister_metric(const metric_id & id);
 std::unique_ptr<metric_groups_def> create_metric_groups();
 
 }
+
+/// Metrics configuration options.
+struct options : public program_options::option_group {
+    /// \brief The hostname used by the metrics.
+    ///
+    /// If not set, the local hostname will be used.
+    program_options::value<std::string> metrics_hostname;
+
+    options(program_options::option_group* parent_group);
+};
+
 /*!
  * \brief set the metrics configuration
  */
-future<> configure(const boost::program_options::variables_map & opts);
+future<> configure(const options& opts);
 
 /*!
- * \brief get the metrics configuration desciprtion
- */
+ * \brief Perform relabeling and operation on metrics dynamically.
+ *
+ * The function would return true if the changes were applied with no conflict
+ * or false, if there was a conflict in the registration.
+ *
+  * The general logic follows Prometheus metrics_relabel_config configuration.
+ * The relabel rules are applied one after the other.
+ * You can add or change a label. you can enable or disable a metric,
+ * in that case the metrics will not be reported at all.
+ * You can turn on and off the skip_when_empty flag.
+ *
+ * Using the Prometheus convention, the metric name is __name__.
+ * Names cannot be changed.
+ *
+ * Import notes:
+ * - The relabeling always starts from the original set of labels the metric
+ *   was created with.
+ * - calling with an empty set will remove the relabel config and will
+ *   return all metrics to their original labels
+ * - To prevent a situation that calling this function would crash the system.
+ *   in a situation where a conflicting metrics name are entered, an additional label
+ *   will be added to the labels with a unique ID.
+ *
+ * A few examples:
+ * To add a level label with a value 1, to the reactor_utilization metric:
+ *  std::vector<sm::relabel_config> rl(1);
+    rl[0].source_labels = {"__name__"};
+    rl[0].target_label = "level";
+    rl[0].replacement = "1";
+    rl[0].expr = "reactor_utilization";
+   set_relabel_configs(rl);
+ *
+ * To report only the metrics with the level label equals 1
+ *
+    std::vector<sm::relabel_config> rl(2);
+    rl[0].source_labels = {"__name__"};
+    rl[0].action = sm::relabel_config::relabel_action::drop;
 
-boost::program_options::options_description get_options_description();
+    rl[1].source_labels = {"level"};
+    rl[1].expr = "1";
+    rl[1].action = sm::relabel_config::relabel_action::keep;
+    set_relabel_configs(rl);
+
+ */
+future<metric_relabeling_result> set_relabel_configs(const std::vector<relabel_config>& relabel_configs);
+/*
+ * \brief return the current relabel_configs
+ * This function returns a vector of the current relabel configs
+ */
+const std::vector<relabel_config>& get_relabel_configs();
 
 }
 }

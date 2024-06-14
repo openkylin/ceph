@@ -21,13 +21,16 @@
 
 #pragma once
 
+#include <seastar/core/sstring.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
 #include <fmt/ostream.h>
 #include <fmt/printf.h>
 #include <iostream>
 #include <iomanip>
 #include <chrono>
 #include <sstream>
-#include <seastar/core/sstring.hh>
+#endif
 
 #if 0
 inline
@@ -40,6 +43,7 @@ operator<<(std::ostream& os, const void* ptr) {
 }
 #endif
 
+SEASTAR_MODULE_EXPORT
 inline
 std::ostream&
 operator<<(std::ostream&& os, const void* ptr) {
@@ -49,6 +53,7 @@ operator<<(std::ostream&& os, const void* ptr) {
 namespace seastar {
 
 template <typename... A>
+[[deprecated("use std::format_to() or fmt::print()")]]
 std::ostream&
 fprint(std::ostream& os, const char* fmt, A&&... a) {
     ::fmt::fprintf(os, fmt, std::forward<A>(a)...);
@@ -56,12 +61,14 @@ fprint(std::ostream& os, const char* fmt, A&&... a) {
 }
 
 template <typename... A>
+[[deprecated("use std::format_to() or fmt::print()")]]
 void
 print(const char* fmt, A&&... a) {
     ::fmt::printf(fmt, std::forward<A>(a)...);
 }
 
 template <typename... A>
+[[deprecated("use std::format() or fmt::format()")]]
 std::string
 sprint(const char* fmt, A&&... a) {
     std::ostringstream os;
@@ -70,6 +77,7 @@ sprint(const char* fmt, A&&... a) {
 }
 
 template <typename... A>
+[[deprecated("use std::format() or fmt::format()")]]
 std::string
 sprint(const sstring& fmt, A&&... a) {
     std::ostringstream os;
@@ -78,6 +86,7 @@ sprint(const sstring& fmt, A&&... a) {
 }
 
 template <typename Iterator>
+[[deprecated("use fmt::join()")]]
 std::string
 format_separated(Iterator b, Iterator e, const char* sep = ", ") {
     std::string ret;
@@ -133,12 +142,17 @@ template <typename... A>
 sstring
 format(const char* fmt, A&&... a) {
     fmt::memory_buffer out;
+#if FMT_VERSION >= 80000
+    fmt::format_to(fmt::appender(out), fmt::runtime(fmt), std::forward<A>(a)...);
+#else
     fmt::format_to(out, fmt, std::forward<A>(a)...);
+#endif
     return sstring{out.data(), out.size()};
 }
 
 // temporary, use fmt::print() instead
 template <typename... A>
+[[deprecated("use std::format() or fmt::print()")]]
 std::ostream&
 fmt_print(std::ostream& os, const char* format, A&&... a) {
     fmt::print(os, format, std::forward<A>(a)...);

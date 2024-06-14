@@ -31,10 +31,12 @@
 #include <map>
 #include <deque>
 #include <queue>
+#ifndef WITH_SEASTAR
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
 #include <thread>
+#endif
 #include <iostream>
 #include <sstream>
 #include <limits>
@@ -284,6 +286,7 @@ namespace crimson {
     class PriorityQueueBase {
       // we don't want to include gtest.h just for FRIEND_TEST
       friend class dmclock_server_client_idle_erase_Test;
+      friend class dmclock_server_add_req_pushprio_queue_Test;
 
       // types used for tag dispatch to select between implementations
       using TagCalc = std::integral_constant<bool, IsDelayed>;
@@ -296,7 +299,8 @@ namespace crimson {
 
     protected:
 
-      using TimePoint = decltype(std::chrono::steady_clock::now());
+      using Clock = std::chrono::steady_clock;
+      using TimePoint = Clock::time_point;
       using Duration = std::chrono::milliseconds;
       using MarkPoint = std::pair<TimePoint,Counter>;
 
@@ -757,8 +761,13 @@ namespace crimson {
       ClientInfoFunc        client_info_f;
       static constexpr bool is_dynamic_cli_info_f = U1;
 
+#ifdef WITH_SEASTAR
+      static constexpr int data_mtx = 0;
+      struct DataGuard { DataGuard(int) {} };
+#else
       mutable std::mutex data_mtx;
       using DataGuard = std::lock_guard<decltype(data_mtx)>;
+#endif
 
       // stable mapping between client ids and client queues
       std::map<C,ClientRecRef> client_map;
@@ -798,9 +807,11 @@ namespace crimson {
       RejectThreshold  reject_threshold = 0;
 
       double           anticipation_timeout;
-
+#ifdef WITH_SEASTAR
+      bool finishing;
+#else
       std::atomic_bool finishing;
-
+#endif
       // every request creates a tick
       Counter tick = 0;
 
@@ -939,7 +950,7 @@ namespace crimson {
 	  // proportion tag -- O(1) -- or the client with the lowest
 	  // previous proportion tag -- O(n) where n = # clients.
 	  //
-	  // So we don't have to maintain a propotional queue that
+	  // So we don't have to maintain a proportional queue that
 	  // keeps the minimum on proportional tag alone (we're
 	  // instead using a ready queue), we'll have to check each
 	  // client.
@@ -1078,7 +1089,7 @@ namespace crimson {
 	  // only maintain a tag for the first request
 	  auto& r = client.requests.front();
 	  r.tag.reservation -=
-	    client.info->reservation_inv * std::max(uint32_t(1), tag.rho);
+	    client.info->reservation_inv * (tag.cost + tag.rho);
 	}
       }
 
@@ -1086,7 +1097,7 @@ namespace crimson {
       void reduce_reservation_tags(ImmediateTagCalc imm, ClientRec& client,
                                    const RequestTag& tag) {
         double res_offset =
-          client.info->reservation_inv * std::max(uint32_t(1), tag.rho);
+          client.info->reservation_inv * (tag.cost + tag.rho);
 	for (auto& r : client.requests) {
 	  r.tag.reservation -= res_offset;
 	}
@@ -1104,7 +1115,7 @@ namespace crimson {
 
 	// don't forget to update previous tag
 	client.prev_tag.reservation -=
-	  client.info->reservation_inv * std::max(uint32_t(1), tag.rho);
+	  client.info->reservation_inv * (tag.cost + tag.rho);
 	resv_heap.promote(client);
       }
 
@@ -1380,7 +1391,7 @@ namespace crimson {
 		      const C& client_id,
 		      const ReqParams& req_params,
 		      const Cost cost = 1u) {
-	return add_request(request, req_params, client_id, get_time(), cost);
+	return add_request(std::move(request), client_id, req_params, get_time(), cost);
       }
 
 
@@ -1388,7 +1399,7 @@ namespace crimson {
 		      const C& client_id,
 		      const Cost cost = 1u) {
 	static const ReqParams null_req_params;
-	return add_request(request, null_req_params, client_id, get_time(), cost);
+	return add_request(std::move(request), client_id, null_req_params, get_time(), cost);
       }
 
 
@@ -1498,7 +1509,8 @@ namespace crimson {
       }
     }; // class PullPriorityQueue
 
-
+#ifndef WITH_SEASTAR
+    // TODO: PushPriorityQueue is not ported to seastar yet
     // PUSH version
     template<typename C, typename R, bool IsDelayed=false, bool U1=false, unsigned B=2>
     class PushPriorityQueue : public PriorityQueueBase<C,R,IsDelayed,U1,B> {
@@ -1580,7 +1592,10 @@ namespace crimson {
 
       ~PushPriorityQueue() {
 	this->finishing = true;
-	sched_ahead_cv.notify_one();
+	{
+	  std::lock_guard<std::mutex> l(sched_ahead_mtx);
+	  sched_ahead_cv.notify_one();
+	}
 	sched_ahead_thd.join();
       }
 
@@ -1602,7 +1617,7 @@ namespace crimson {
 		      const C& client_id,
 		      const ReqParams& req_params,
 		      const Cost cost = 1u) {
-	return add_request(request, req_params, client_id, get_time(), cost);
+	return add_request(std::move(request), client_id, req_params, get_time(), cost);
       }
 
 
@@ -1634,7 +1649,7 @@ namespace crimson {
 				      time,
 				      cost);
         if (r == 0) {
-	  schedule_request();
+	  (void) schedule_request();
         }
 #ifdef PROFILE
 	add_request_timer.stop();
@@ -1648,7 +1663,7 @@ namespace crimson {
 #ifdef PROFILE
 	request_complete_timer.start();
 #endif
-	schedule_request();
+	(void) schedule_request();
 #ifdef PROFILE
 	request_complete_timer.stop();
 #endif
@@ -1733,11 +1748,11 @@ namespace crimson {
 
 
       // data_mtx should be held when called
-      void schedule_request() {
+      typename super::NextReqType schedule_request() {
 	typename super::NextReq next_req = next_request();
 	switch (next_req.type) {
 	case super::NextReqType::none:
-	  return;
+	  break;
 	case super::NextReqType::future:
 	  sched_at(next_req.when_ready);
 	  break;
@@ -1747,6 +1762,7 @@ namespace crimson {
 	default:
 	  assert(false);
 	}
+	return next_req.type;
       }
 
 
@@ -1756,23 +1772,30 @@ namespace crimson {
 	std::unique_lock<std::mutex> l(sched_ahead_mtx);
 
 	while (!this->finishing) {
+	  // predicate for cond.wait()
+	  const auto pred = [this] () -> bool {
+	    return this->finishing || sched_ahead_when > TimeZero;
+	  };
+
 	  if (TimeZero == sched_ahead_when) {
-	    sched_ahead_cv.wait(l);
+	    sched_ahead_cv.wait(l, pred);
 	  } else {
-	    Time now;
-	    while (!this->finishing && (now = get_time()) < sched_ahead_when) {
-	      long microseconds_l = long(1 + 1000000 * (sched_ahead_when - now));
-	      auto microseconds = std::chrono::microseconds(microseconds_l);
-	      sched_ahead_cv.wait_for(l, microseconds);
-	    }
+	    // cast from Time -> duration<Time> -> Duration -> TimePoint
+	    const auto until = typename super::TimePoint{
+		duration_cast<typename super::Duration>(
+		    std::chrono::duration<Time>{sched_ahead_when})};
+	    sched_ahead_cv.wait_until(l, until, pred);
 	    sched_ahead_when = TimeZero;
 	    if (this->finishing) return;
 
 	    l.unlock();
 	    if (!this->finishing) {
-	      typename super::DataGuard g(this->data_mtx);
-	      schedule_request();
-	    }
+	      do {
+ 	        typename super::DataGuard g(this->data_mtx);
+ 	        if (schedule_request() == super::NextReqType::future)
+ 	          break;
+	      } while (!this->empty());
+ 	    }
 	    l.lock();
 	  }
 	}
@@ -1788,6 +1811,6 @@ namespace crimson {
 	}
       }
     }; // class PushPriorityQueue
-
+#endif // !WITH_SEASTAR
   } // namespace dmclock
 } // namespace crimson

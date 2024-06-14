@@ -4,7 +4,6 @@
 #ifndef CEPH_CLS_RBD_TYPES_H
 #define CEPH_CLS_RBD_TYPES_H
 
-#include <boost/variant.hpp>
 #include "include/int_types.h"
 #include "include/buffer.h"
 #include "include/encoding.h"
@@ -14,6 +13,7 @@
 #include <iosfwd>
 #include <string>
 #include <set>
+#include <variant>
 
 #define RBD_GROUP_REF "rbd_group_ref"
 
@@ -23,20 +23,20 @@ namespace cls {
 namespace rbd {
 
 static const uint32_t MAX_OBJECT_MAP_OBJECT_COUNT = 256000000;
-static const string RBD_GROUP_IMAGE_KEY_PREFIX = "image_";
+static const std::string RBD_GROUP_IMAGE_KEY_PREFIX = "image_";
 
 enum DirectoryState {
   DIRECTORY_STATE_READY         = 0,
   DIRECTORY_STATE_ADD_DISABLED  = 1
 };
 
-inline void encode(DirectoryState state, bufferlist& bl,
+inline void encode(DirectoryState state, ceph::buffer::list& bl,
 		   uint64_t features=0)
 {
   ceph::encode(static_cast<uint8_t>(state), bl);
 }
 
-inline void decode(DirectoryState &state, bufferlist::const_iterator& it)
+inline void decode(DirectoryState &state, ceph::buffer::list::const_iterator& it)
 {
   uint8_t int_state;
   ceph::decode(int_state, it);
@@ -54,14 +54,14 @@ enum GroupImageLinkState {
   GROUP_IMAGE_LINK_STATE_INCOMPLETE
 };
 
-inline void encode(const GroupImageLinkState &state, bufferlist& bl,
+inline void encode(const GroupImageLinkState &state, ceph::buffer::list& bl,
 		   uint64_t features=0)
 {
   using ceph::encode;
   encode(static_cast<uint8_t>(state), bl);
 }
 
-inline void decode(GroupImageLinkState &state, bufferlist::const_iterator& it)
+inline void decode(GroupImageLinkState &state, ceph::buffer::list::const_iterator& it)
 {
   uint8_t int_state;
   using ceph::decode;
@@ -115,9 +115,9 @@ struct MirrorPeer {
     return (!uuid.empty() && !site_name.empty());
   }
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<MirrorPeer*> &o);
 
@@ -156,9 +156,9 @@ struct MirrorImage {
   std::string global_image_id;
   MirrorImageState state = MIRROR_IMAGE_STATE_DISABLING;
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<MirrorImage*> &o);
 
@@ -182,7 +182,7 @@ enum MirrorImageStatusState {
   MIRROR_IMAGE_STATUS_STATE_STOPPED         = 6,
 };
 
-inline void encode(const MirrorImageStatusState &state, bufferlist& bl,
+inline void encode(const MirrorImageStatusState &state, ceph::buffer::list& bl,
 		   uint64_t features=0)
 {
   using ceph::encode;
@@ -190,7 +190,7 @@ inline void encode(const MirrorImageStatusState &state, bufferlist& bl,
 }
 
 inline void decode(MirrorImageStatusState &state,
-                   bufferlist::const_iterator& it)
+                   ceph::buffer::list::const_iterator& it)
 {
   uint8_t int_state;
   using ceph::decode;
@@ -216,12 +216,12 @@ struct MirrorImageSiteStatus {
   utime_t last_update;
   bool up = false;
 
-  void encode_meta(uint8_t version, bufferlist &bl) const;
-  void decode_meta(uint8_t version, bufferlist::const_iterator &it);
+  void encode_meta(uint8_t version, ceph::buffer::list &bl) const;
+  void decode_meta(uint8_t version, ceph::buffer::list::const_iterator &it);
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   std::string state_to_string() const;
 
@@ -242,11 +242,11 @@ struct MirrorImageSiteStatusOnDisk : cls::rbd::MirrorImageSiteStatus {
     cls::rbd::MirrorImageSiteStatus(status) {
   }
 
-  void encode_meta(bufferlist &bl, uint64_t features) const;
-  void decode_meta(bufferlist::const_iterator &it);
+  void encode_meta(ceph::buffer::list &bl, uint64_t features) const;
+  void decode_meta(ceph::buffer::list::const_iterator &it);
 
-  void encode(bufferlist &bl, uint64_t features) const;
-  void decode(bufferlist::const_iterator &it);
+  void encode(ceph::buffer::list &bl, uint64_t features) const;
+  void decode(ceph::buffer::list::const_iterator &it);
 
   static void generate_test_instances(
       std::list<MirrorImageSiteStatusOnDisk*> &o);
@@ -265,9 +265,9 @@ struct MirrorImageStatus {
 
   int get_local_mirror_image_site_status(MirrorImageSiteStatus* status) const;
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   bool operator==(const MirrorImageStatus& rhs) const;
 
@@ -306,9 +306,9 @@ struct ParentImageSpec {
     return !(*this == rhs);
   }
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<ParentImageSpec*> &o);
 };
@@ -328,9 +328,9 @@ struct ChildImageSpec {
     : pool_id(pool_id), pool_namespace(pool_namespace), image_id(image_id) {
   }
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<ChildImageSpec*> &o);
 
@@ -366,9 +366,9 @@ struct GroupImageSpec {
   std::string image_id;
   int64_t pool_id = -1;
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<GroupImageSpec*> &o);
 
@@ -391,9 +391,9 @@ struct GroupImageStatus {
   GroupImageSpec spec;
   GroupImageLinkState state = GROUP_IMAGE_LINK_STATE_INCOMPLETE;
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<GroupImageStatus*> &o);
 
@@ -410,9 +410,9 @@ struct GroupSpec {
   std::string group_id;
   int64_t pool_id = -1;
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
   bool is_valid() const;
 
   static void generate_test_instances(std::list<GroupSpec *> &o);
@@ -433,13 +433,17 @@ struct UserSnapshotNamespace {
 
   UserSnapshotNamespace() {}
 
-  void encode(bufferlist& bl) const {}
-  void decode(bufferlist::const_iterator& it) {}
+  void encode(ceph::buffer::list& bl) const {}
+  void decode(ceph::buffer::list::const_iterator& it) {}
 
-  void dump(Formatter *f) const {}
+  void dump(ceph::Formatter *f) const {}
 
   inline bool operator==(const UserSnapshotNamespace& usn) const {
     return true;
+  }
+
+  inline bool operator!=(const UserSnapshotNamespace& usn) const {
+    return false;
   }
 
   inline bool operator<(const UserSnapshotNamespace& usn) const {
@@ -454,24 +458,28 @@ struct GroupSnapshotNamespace {
   GroupSnapshotNamespace() {}
 
   GroupSnapshotNamespace(int64_t _group_pool,
-			 const string &_group_id,
-			 const string &_group_snapshot_id)
+			 const std::string &_group_id,
+			 const std::string &_group_snapshot_id)
     : group_id(_group_id), group_pool(_group_pool),
       group_snapshot_id(_group_snapshot_id) {}
 
-  string group_id;
+  std::string group_id;
   int64_t group_pool = 0;
-  string group_snapshot_id;
+  std::string group_snapshot_id;
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& it);
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
 
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
 
   inline bool operator==(const GroupSnapshotNamespace& gsn) const {
     return group_pool == gsn.group_pool &&
 	   group_id == gsn.group_id &&
 	   group_snapshot_id == gsn.group_snapshot_id;
+  }
+
+  inline bool operator!=(const GroupSnapshotNamespace& gsn) const {
+    return !operator==(gsn);
   }
 
   inline bool operator<(const GroupSnapshotNamespace& gsn) const {
@@ -499,12 +507,15 @@ struct TrashSnapshotNamespace {
     : original_name(original_name),
       original_snapshot_namespace_type(original_snapshot_namespace_type) {}
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
+  void dump(ceph::Formatter *f) const;
 
   inline bool operator==(const TrashSnapshotNamespace& usn) const {
     return true;
+  }
+  inline bool operator!=(const TrashSnapshotNamespace& usn) const {
+    return false;
   }
   inline bool operator<(const TrashSnapshotNamespace& usn) const {
     return false;
@@ -518,13 +529,13 @@ enum MirrorSnapshotState {
   MIRROR_SNAPSHOT_STATE_NON_PRIMARY_DEMOTED = 3,
 };
 
-inline void encode(const MirrorSnapshotState &state, bufferlist& bl,
+inline void encode(const MirrorSnapshotState &state, ceph::buffer::list& bl,
                    uint64_t features=0) {
   using ceph::encode;
   encode(static_cast<uint8_t>(state), bl);
 }
 
-inline void decode(MirrorSnapshotState &state, bufferlist::const_iterator& it) {
+inline void decode(MirrorSnapshotState &state, ceph::buffer::list::const_iterator& it) {
   using ceph::decode;
   uint8_t int_state;
   decode(int_state, it);
@@ -596,10 +607,10 @@ struct MirrorSnapshotNamespace {
             primary_snap_id == CEPH_NOSNAP);
   }
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& it);
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
 
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
 
   inline bool operator==(const MirrorSnapshotNamespace& rhs) const {
     return state == rhs.state &&
@@ -609,6 +620,10 @@ struct MirrorSnapshotNamespace {
            primary_snap_id == rhs.primary_snap_id &&
            last_copied_object_number == rhs.last_copied_object_number &&
            snap_seqs == rhs.snap_seqs;
+  }
+
+  inline bool operator!=(const MirrorSnapshotNamespace& rhs) const {
+    return !operator==(rhs);
   }
 
   inline bool operator<(const MirrorSnapshotNamespace& rhs) const {
@@ -636,12 +651,16 @@ struct UnknownSnapshotNamespace {
 
   UnknownSnapshotNamespace() {}
 
-  void encode(bufferlist& bl) const {}
-  void decode(bufferlist::const_iterator& it) {}
-  void dump(Formatter *f) const {}
+  void encode(ceph::buffer::list& bl) const {}
+  void decode(ceph::buffer::list::const_iterator& it) {}
+  void dump(ceph::Formatter *f) const {}
 
   inline bool operator==(const UnknownSnapshotNamespace& gsn) const {
     return true;
+  }
+
+  inline bool operator!=(const UnknownSnapshotNamespace& gsn) const {
+    return false;
   }
 
   inline bool operator<(const UnknownSnapshotNamespace& gsn) const {
@@ -656,37 +675,32 @@ std::ostream& operator<<(std::ostream& os, const TrashSnapshotNamespace& ns);
 std::ostream& operator<<(std::ostream& os, const MirrorSnapshotNamespace& ns);
 std::ostream& operator<<(std::ostream& os, const UnknownSnapshotNamespace& ns);
 
-typedef boost::variant<UserSnapshotNamespace,
-                       GroupSnapshotNamespace,
-                       TrashSnapshotNamespace,
-                       MirrorSnapshotNamespace,
-                       UnknownSnapshotNamespace> SnapshotNamespaceVariant;
+typedef std::variant<UserSnapshotNamespace,
+		     GroupSnapshotNamespace,
+		     TrashSnapshotNamespace,
+		     MirrorSnapshotNamespace,
+		     UnknownSnapshotNamespace> SnapshotNamespaceVariant;
 
 struct SnapshotNamespace : public SnapshotNamespaceVariant {
-  SnapshotNamespace() {
+  using SnapshotNamespaceVariant::SnapshotNamespaceVariant;
+
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
+  void dump(ceph::Formatter *f) const;
+
+  template <typename F>
+  decltype(auto) visit(F&& f) const & {
+    return std::visit(std::forward<F>(f), static_cast<const SnapshotNamespaceVariant&>(*this));
   }
-
-  template <typename T>
-  SnapshotNamespace(T&& t) : SnapshotNamespaceVariant(std::forward<T>(t)) {
+  template <typename F>
+  decltype(auto) visit(F&& f) & {
+    return std::visit(std::forward<F>(f), static_cast<SnapshotNamespaceVariant&>(*this));
   }
-
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& it);
-  void dump(Formatter *f) const;
-
   static void generate_test_instances(std::list<SnapshotNamespace*> &o);
-
-  inline bool operator==(const SnapshotNamespaceVariant& sn) const {
-    return static_cast<const SnapshotNamespaceVariant&>(*this) == sn;
-  }
-  inline bool operator<(const SnapshotNamespaceVariant& sn) const {
-    return static_cast<const SnapshotNamespaceVariant&>(*this) < sn;
-  }
-  inline bool operator!=(const SnapshotNamespaceVariant& sn) const {
-    return !(*this == sn);
-  }
 };
 WRITE_CLASS_ENCODER(SnapshotNamespace);
+
+std::ostream& operator<<(std::ostream& os, const SnapshotNamespace& ns);
 
 SnapshotNamespaceType get_snap_namespace_type(
     const SnapshotNamespace& snapshot_namespace);
@@ -710,9 +724,9 @@ struct SnapshotInfo {
       child_count(child_count) {
   }
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<SnapshotInfo*> &o);
 };
@@ -723,13 +737,13 @@ enum GroupSnapshotState {
   GROUP_SNAPSHOT_STATE_COMPLETE = 1,
 };
 
-inline void encode(const GroupSnapshotState &state, bufferlist& bl, uint64_t features=0)
+inline void encode(const GroupSnapshotState &state, ceph::buffer::list& bl, uint64_t features=0)
 {
   using ceph::encode;
   encode(static_cast<uint8_t>(state), bl);
 }
 
-inline void decode(GroupSnapshotState &state, bufferlist::const_iterator& it)
+inline void decode(GroupSnapshotState &state, ceph::buffer::list::const_iterator& it)
 {
   using ceph::decode;
   uint8_t int_state;
@@ -739,20 +753,20 @@ inline void decode(GroupSnapshotState &state, bufferlist::const_iterator& it)
 
 struct ImageSnapshotSpec {
   int64_t pool;
-  string image_id;
+  std::string image_id;
   snapid_t snap_id;
 
   ImageSnapshotSpec() {}
   ImageSnapshotSpec(int64_t _pool,
-		    string _image_id,
+		    std::string _image_id,
 		    snapid_t _snap_id) : pool(_pool),
 					 image_id(_image_id),
 					 snap_id(_snap_id) {}
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& it);
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
 
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<ImageSnapshotSpec *> &o);
 };
@@ -770,11 +784,11 @@ struct GroupSnapshot {
 					     name(_name),
 					     state(_state) {}
 
-  vector<ImageSnapshotSpec> snaps;
+  std::vector<ImageSnapshotSpec> snaps;
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<GroupSnapshot *> &o);
 };
@@ -809,14 +823,14 @@ inline std::ostream& operator<<(std::ostream& os,
   return os;
 }
 
-inline void encode(const TrashImageSource &source, bufferlist& bl,
+inline void encode(const TrashImageSource &source, ceph::buffer::list& bl,
 		   uint64_t features=0)
 {
   using ceph::encode;
   encode(static_cast<uint8_t>(source), bl);
 }
 
-inline void decode(TrashImageSource &source, bufferlist::const_iterator& it)
+inline void decode(TrashImageSource &source, ceph::buffer::list::const_iterator& it)
 {
   uint8_t int_source;
   using ceph::decode;
@@ -831,13 +845,13 @@ enum TrashImageState {
   TRASH_IMAGE_STATE_RESTORING = 3
 };
 
-inline void encode(const TrashImageState &state, bufferlist &bl)
+inline void encode(const TrashImageState &state, ceph::buffer::list &bl)
 {
   using ceph::encode;
   encode(static_cast<uint8_t>(state), bl);
 }
 
-inline void decode(TrashImageState &state, bufferlist::const_iterator &it)
+inline void decode(TrashImageState &state, ceph::buffer::list::const_iterator &it)
 {
   uint8_t int_state;
   using ceph::decode;
@@ -860,9 +874,9 @@ struct TrashImageSpec {
       deferment_end_time(deferment_end_time) {
   }
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator& it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
+  void dump(ceph::Formatter *f) const;
 
   inline bool operator==(const TrashImageSpec& rhs) const {
     return (source == rhs.source &&
@@ -871,6 +885,7 @@ struct TrashImageSpec {
             deferment_end_time == rhs.deferment_end_time);
   }
 };
+
 WRITE_CLASS_ENCODER(TrashImageSpec);
 
 struct MirrorImageMap {
@@ -878,7 +893,7 @@ struct MirrorImageMap {
   }
 
   MirrorImageMap(const std::string &instance_id, utime_t mapped_time,
-                 const bufferlist &data)
+                 const ceph::buffer::list &data)
     : instance_id(instance_id),
       mapped_time(mapped_time),
       data(data) {
@@ -886,11 +901,11 @@ struct MirrorImageMap {
 
   std::string instance_id;
   utime_t mapped_time;
-  bufferlist data;
+  ceph::buffer::list data;
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<MirrorImageMap*> &o);
 
@@ -907,12 +922,12 @@ enum MigrationHeaderType {
   MIGRATION_HEADER_TYPE_DST = 2,
 };
 
-inline void encode(const MigrationHeaderType &type, bufferlist& bl) {
+inline void encode(const MigrationHeaderType &type, ceph::buffer::list& bl) {
   using ceph::encode;
   encode(static_cast<uint8_t>(type), bl);
 }
 
-inline void decode(MigrationHeaderType &type, bufferlist::const_iterator& it) {
+inline void decode(MigrationHeaderType &type, ceph::buffer::list::const_iterator& it) {
   uint8_t int_type;
   using ceph::decode;
   decode(int_type, it);
@@ -928,12 +943,12 @@ enum MigrationState {
   MIGRATION_STATE_ABORTING = 5,
 };
 
-inline void encode(const MigrationState &state, bufferlist& bl) {
+inline void encode(const MigrationState &state, ceph::buffer::list& bl) {
   using ceph::encode;
   encode(static_cast<uint8_t>(state), bl);
 }
 
-inline void decode(MigrationState &state, bufferlist::const_iterator& it) {
+inline void decode(MigrationState &state, ceph::buffer::list::const_iterator& it) {
   uint8_t int_state;
   using ceph::decode;
   decode(int_state, it);
@@ -949,6 +964,7 @@ struct MigrationSpec {
   std::string pool_namespace;
   std::string image_name;
   std::string image_id;
+  std::string source_spec;
   std::map<uint64_t, uint64_t> snap_seqs;
   uint64_t overlap = 0;
   bool flatten = false;
@@ -961,31 +977,33 @@ struct MigrationSpec {
   }
   MigrationSpec(MigrationHeaderType header_type, int64_t pool_id,
                 const std::string& pool_namespace,
-                const std::string &image_name, const std::string &image_id,
+                const std::string& image_name, const std::string &image_id,
+                const std::string& source_spec,
                 const std::map<uint64_t, uint64_t> &snap_seqs, uint64_t overlap,
                 bool mirroring, MirrorImageMode mirror_image_mode, bool flatten,
                 MigrationState state, const std::string &state_description)
     : header_type(header_type), pool_id(pool_id),
       pool_namespace(pool_namespace), image_name(image_name),
-      image_id(image_id), snap_seqs(snap_seqs), overlap(overlap),
-      flatten(flatten), mirroring(mirroring),
+      image_id(image_id), source_spec(source_spec), snap_seqs(snap_seqs),
+      overlap(overlap), flatten(flatten), mirroring(mirroring),
       mirror_image_mode(mirror_image_mode), state(state),
       state_description(state_description) {
   }
 
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator& it);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator& it);
+  void dump(ceph::Formatter *f) const;
 
   static void generate_test_instances(std::list<MigrationSpec*> &o);
 
   inline bool operator==(const MigrationSpec& ms) const {
     return header_type == ms.header_type && pool_id == ms.pool_id &&
       pool_namespace == ms.pool_namespace && image_name == ms.image_name &&
-      image_id == ms.image_id && snap_seqs == ms.snap_seqs &&
-      overlap == ms.overlap && flatten == ms.flatten &&
-      mirroring == ms.mirroring && mirror_image_mode == ms.mirror_image_mode &&
-      state == ms.state && state_description == ms.state_description;
+      image_id == ms.image_id && source_spec == ms.source_spec &&
+      snap_seqs == ms.snap_seqs && overlap == ms.overlap &&
+      flatten == ms.flatten && mirroring == ms.mirroring &&
+      mirror_image_mode == ms.mirror_image_mode && state == ms.state &&
+      state_description == ms.state_description;
   }
 };
 
@@ -998,12 +1016,12 @@ enum AssertSnapcSeqState {
   ASSERT_SNAPC_SEQ_LE_SNAPSET_SEQ = 1,
 };
 
-inline void encode(const AssertSnapcSeqState &state, bufferlist& bl) {
+inline void encode(const AssertSnapcSeqState &state, ceph::buffer::list& bl) {
   using ceph::encode;
   encode(static_cast<uint8_t>(state), bl);
 }
 
-inline void decode(AssertSnapcSeqState &state, bufferlist::const_iterator& it) {
+inline void decode(AssertSnapcSeqState &state, ceph::buffer::list::const_iterator& it) {
   uint8_t int_state;
   using ceph::decode;
   decode(int_state, it);

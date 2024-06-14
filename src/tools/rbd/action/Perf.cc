@@ -11,7 +11,9 @@
 #include "common/Formatter.h"
 #include "common/TextTable.h"
 #include "global/global_context.h"
+#ifdef HAVE_CURSES
 #include <ncurses.h>
+#endif
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/time.h>
@@ -338,6 +340,7 @@ void format(const ImageStats& image_stats, Formatter* f, bool global_search) {
 
 } // namespace iostat
 
+#ifdef HAVE_CURSES
 namespace iotop {
 
 class MainWindow {
@@ -560,6 +563,7 @@ private:
 };
 
 } // namespace iotop
+#endif // HAVE_CURSES
 
 
 void get_arguments_iostat(po::options_description *positional,
@@ -600,7 +604,7 @@ int execute_iostat(const po::variables_map &vm,
 
   auto f = formatter.get();
   if (iterations > 1 && f != nullptr) {
-    std::cerr << "rbd: specifing iterations is not valid with formatted output"
+    std::cerr << "rbd: specifying iterations is not valid with formatted output"
               << std::endl;
     return -EINVAL;
   }
@@ -656,6 +660,7 @@ int execute_iostat(const po::variables_map &vm,
   return 0;
 }
 
+#ifdef HAVE_CURSES
 void get_arguments_iotop(po::options_description *positional,
                          po::options_description *options) {
   at::add_pool_options(positional, options, true);
@@ -698,13 +703,15 @@ int execute_iotop(const po::variables_map &vm,
   return 0;
 }
 
-Shell::Action stat_action(
-  {"perf", "image", "iostat"}, {}, "Display image IO statistics.", "",
-  &get_arguments_iostat, &execute_iostat);
 Shell::Action top_action(
   {"perf", "image", "iotop"}, {}, "Display a top-like IO monitor.", "",
   &get_arguments_iotop, &execute_iotop);
 
+#endif // HAVE_CURSES
+
+Shell::Action stat_action(
+  {"perf", "image", "iostat"}, {}, "Display image IO statistics.", "",
+  &get_arguments_iostat, &execute_iostat);
 } // namespace perf
 } // namespace action
 } // namespace rbd

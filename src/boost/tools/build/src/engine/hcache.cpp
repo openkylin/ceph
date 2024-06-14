@@ -45,6 +45,9 @@
 #include "variable.h"
 #include "output.h"
 
+#include <errno.h>
+#include <string.h>
+
 typedef struct hcachedata HCACHEDATA ;
 
 struct hcachedata
@@ -180,7 +183,6 @@ void hcache_init()
 {
     FILE       * f;
     OBJECT     * version = 0;
-    int          header_count = 0;
     const char * hcachename;
 
     if ( hcachehash )
@@ -192,7 +194,12 @@ void hcache_init()
         return;
 
     if ( !( f = fopen( hcachename, "rb" ) ) )
+    {
+        if ( errno != ENOENT )
+            err_printf( "[errno %d] failed to read hcache file '%s': %s",
+                errno, hcachename, strerror(errno) );
         return;
+    }
 
     version = read_netstring( f );
 
@@ -308,8 +315,6 @@ void hcache_init()
         c->next = hcachelist;
         hcachelist = c;
 
-        ++header_count;
-
         object_free( record_type );
         object_free( time_secs_str );
         object_free( time_nsecs_str );
@@ -359,7 +364,11 @@ void hcache_done()
         goto cleanup;
 
     if ( !( f = fopen( hcachename, "wb" ) ) )
+    {
+        err_printf( "[errno %d] failed to write hcache file '%s': %s",
+            errno, hcachename, strerror(errno) );
         goto cleanup;
+    }
 
     maxage = cache_maxage();
 

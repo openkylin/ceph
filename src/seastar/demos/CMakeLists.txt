@@ -54,10 +54,16 @@ endmacro ()
 seastar_add_demo (block_discard
   SOURCES block_discard_demo.cc)
 
-if (Seastar_EXPERIMENTAL_COROUTINES_TS)
+if (${Seastar_API_LEVEL} GREATER_EQUAL 3)
   seastar_add_demo (coroutines
     SOURCES coroutines_demo.cc)
 endif ()
+
+seastar_add_demo (hello-world
+  SOURCES hello-world.cc)
+
+seastar_add_demo (websocket
+  SOURCES websocket_demo.cc)
 
 seastar_add_demo (echo
   SOURCES echo_demo.cc)
@@ -104,3 +110,25 @@ seastar_add_demo (udp_server
 
 seastar_add_demo (udp_zero_copy
   SOURCES udp_zero_copy_demo.cc)
+
+seastar_add_demo (sharded_parameter
+  SOURCES sharded_parameter_demo.cc)
+
+seastar_add_demo (file
+  SOURCES file_demo.cc)
+
+seastar_add_demo (tutorial_examples
+  SOURCES tutorial_examples.cc)
+
+seastar_add_demo (http_client
+  SOURCES http_client_demo.cc)
+
+if (Seastar_MODULE)
+  add_executable (hello_cxx_module)
+  target_sources (hello_cxx_module
+    PRIVATE
+      hello-cxx-module.cc)
+  target_link_libraries (hello_cxx_module
+    PRIVATE
+      seastar-module)
+endif ()

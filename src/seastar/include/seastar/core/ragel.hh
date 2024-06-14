@@ -21,6 +21,7 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <seastar/core/sstring.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/util/eclipse.hh>
@@ -28,7 +29,9 @@
 #include <memory>
 #include <cassert>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 #include <seastar/core/future.hh>
+#endif
 
 namespace seastar {
 
@@ -56,7 +59,7 @@ public:
         return std::move(_value);
     }
     void reset() {
-        _value.reset();
+        _value = {};
         _start = nullptr;
     }
     friend class guard;
@@ -91,6 +94,7 @@ public:
     }
 };
 
+SEASTAR_MODULE_EXPORT_BEGIN
 
 // CRTP
 template <typename ConcreteParser>
@@ -123,7 +127,7 @@ protected:
         return std::move(_builder).get();
     }
 public:
-    using unconsumed_remainder = compat::optional<temporary_buffer<char>>;
+    using unconsumed_remainder = std::optional<temporary_buffer<char>>;
     future<unconsumed_remainder> operator()(temporary_buffer<char> buf) {
         char* p = buf.get_write();
         char* pe = p + buf.size();
@@ -136,5 +140,18 @@ public:
         return make_ready_future<unconsumed_remainder>();
     }
 };
+
+inline void trim_trailing_spaces_and_tabs(sstring& str) {
+    auto data = str.data();
+    size_t i;
+    for (i = str.size(); i > 0; --i) {
+        auto c = data[i-1];
+        if (!(c == ' ' || c == '\t')) {
+            break;
+        }
+    }
+    str.resize(i);
+}
+SEASTAR_MODULE_EXPORT_END
 
 }

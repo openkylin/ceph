@@ -20,30 +20,28 @@
  */
 #pragma once
 
-#include <vector>
+#ifndef SEASTAR_MODULE
+#include <functional>
+#include <unordered_set>
 #include <map>
-
 #include <boost/any.hpp>
+#endif
 
 #include <seastar/core/future.hh>
+#include <seastar/core/internal/api-level.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/net/socket_defs.hh>
+#include <seastar/net/inet_address.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 #include <seastar/net/api.hh>
-#include "../core/internal/api-level.hh"
 
 namespace seastar {
 
 class socket;
 
-#if SEASTAR_API_LEVEL <= 1
-
-SEASTAR_INCLUDE_API_V1 namespace api_v1 { class server_socket; }
-
-#endif
-
-SEASTAR_INCLUDE_API_V2 namespace api_v2 { class server_socket; }
+class server_socket;
 class connected_socket;
 class socket_address;
 
@@ -57,13 +55,15 @@ class socket_address;
  * with OpenSSL or similar.
  *
  */
+SEASTAR_MODULE_EXPORT
 namespace tls {
+
     enum class x509_crt_format {
         DER,
         PEM,
     };
 
-    typedef compat::basic_string_view<char> blob;
+    typedef std::basic_string_view<char> blob;
 
     class session;
     class server_session;
@@ -115,21 +115,46 @@ namespace tls {
     };
 
     class abstract_credentials {
-    public:
+    protected:
+        abstract_credentials() = default;
+        abstract_credentials(const abstract_credentials&) = default;
+        abstract_credentials& operator=(abstract_credentials&) = default;
+        abstract_credentials& operator=(abstract_credentials&&) = default;
         virtual ~abstract_credentials() {};
-
+    public:
         virtual void set_x509_trust(const blob&, x509_crt_format) = 0;
         virtual void set_x509_crl(const blob&, x509_crt_format) = 0;
         virtual void set_x509_key(const blob& cert, const blob& key, x509_crt_format) = 0;
 
         virtual void set_simple_pkcs12(const blob&, x509_crt_format, const sstring& password) = 0;
 
-        future<> set_x509_trust_file(const sstring& cafile, x509_crt_format);
-        future<> set_x509_crl_file(const sstring& crlfile, x509_crt_format);
-        future<> set_x509_key_file(const sstring& cf, const sstring& kf, x509_crt_format);
+        virtual future<> set_x509_trust_file(const sstring& cafile, x509_crt_format);
+        virtual future<> set_x509_crl_file(const sstring& crlfile, x509_crt_format);
+        virtual future<> set_x509_key_file(const sstring& cf, const sstring& kf, x509_crt_format);
 
-        future<> set_simple_pkcs12_file(const sstring& pkcs12file, x509_crt_format, const sstring& password);
+        virtual future<> set_simple_pkcs12_file(const sstring& pkcs12file, x509_crt_format, const sstring& password);
     };
+
+    template<typename Base>
+    class reloadable_credentials;
+
+    /**
+     * Enum like tls::session::type but independent of gnutls headers
+     *
+     * \warning Uses a different internal encoding than tls::session::type
+     */
+    enum class session_type {
+        CLIENT, SERVER,
+    };
+
+    /**
+     * Callback prototype for receiving Distinguished Name (DN) information
+     *
+     * \param type Our own role in the TLS handshake (client vs. server)
+     * \param subject The subject DN string
+     * \param issuer The issuer DN string
+     */
+    using dn_callback = noncopyable_function<void(session_type type, sstring subject, sstring issuer)>;
 
     /**
      * Holds certificates and keys.
@@ -171,13 +196,39 @@ namespace tls {
          * Allows specifying order and allowance for handshake alg.
          */
         void set_priority_string(const sstring&);
+
+        /**
+         * Register a callback for receiving Distinguished Name (DN) information
+         * during the TLS handshake, extracted from the certificate as sent by the peer.
+         *
+         * The callback is not invoked in case the peer did not send a certificate.
+         * (This could e.g. happen when we are the server, and a client connects while
+         * client_auth is not set to REQUIRE.)
+         *
+         * If, based upon the extracted DN information, you want to abort the handshake,
+         * then simply throw an exception (e.g., from the callback) like verification_error.
+         *
+         * Registering this callback does not bypass the 'standard' certificate verification
+         * procedure; instead it merely extracts the DN information from the peer certificate
+         * (i.e., the 'leaf' certificate from the chain of certificates sent by the peer)
+         * and allows for extra checks.
+         *
+         * To keep the API simple, you can unregister the callback by means of registering
+         * an empty callback, i.e. dn_callback{}
+         *
+         * The callback prototype is documented in the dn_callback typedef.
+         */
+        void set_dn_verification_callback(dn_callback);
+
     private:
         class impl;
         friend class session;
         friend class server_session;
         friend class server_credentials;
         friend class credentials_builder;
-        std::unique_ptr<impl> _impl;
+        template<typename Base>
+        friend class reloadable_credentials;
+        shared_ptr<impl> _impl;
     };
 
     /** Exception thrown on certificate validation error */
@@ -196,6 +247,7 @@ namespace tls {
      */
     class server_credentials : public certificate_credentials {
     public:
+        server_credentials();
         server_credentials(shared_ptr<dh_params>);
         server_credentials(const dh_params&);
 
@@ -207,6 +259,10 @@ namespace tls {
 
         void set_client_auth(client_auth);
     };
+
+    class reloadable_credentials_base;
+
+    using reload_callback = std::function<void(const std::unordered_set<sstring>&, std::exception_ptr)>;
 
     /**
      * Intentionally "primitive", and more importantly, copyable
@@ -227,6 +283,11 @@ namespace tls {
         void set_x509_key(const blob& cert, const blob& key, x509_crt_format) override;
         void set_simple_pkcs12(const blob&, x509_crt_format, const sstring& password) override;
 
+        future<> set_x509_trust_file(const sstring& cafile, x509_crt_format) override;
+        future<> set_x509_crl_file(const sstring& crlfile, x509_crt_format) override;
+        future<> set_x509_key_file(const sstring& cf, const sstring& kf, x509_crt_format) override;
+        future<> set_simple_pkcs12_file(const sstring& pkcs12file, x509_crt_format, const sstring& password) override;
+
         future<> set_system_trust();
         void set_client_auth(client_auth);
         void set_priority_string(const sstring&);
@@ -236,10 +297,24 @@ namespace tls {
         shared_ptr<certificate_credentials> build_certificate_credentials() const;
         shared_ptr<server_credentials> build_server_credentials() const;
 
+        // same as above, but any files used for certs/keys etc will be watched
+        // for modification and reloaded if changed
+        future<shared_ptr<certificate_credentials>> build_reloadable_certificate_credentials(reload_callback = {}, std::optional<std::chrono::milliseconds> tolerance = {}) const;
+        future<shared_ptr<server_credentials>> build_reloadable_server_credentials(reload_callback = {}, std::optional<std::chrono::milliseconds> tolerance = {}) const;
     private:
+        friend class reloadable_credentials_base;
+
         std::multimap<sstring, boost::any> _blobs;
         client_auth _client_auth = client_auth::NONE;
         sstring _priority;
+    };
+
+    /// TLS configuration options
+    struct tls_options {
+        /// \brief whether to wait for EOF from server on session termination
+        bool wait_for_eof_on_shutdown = true;
+        /// \brief server name to be used for the SNI TLS extension
+        sstring server_name = {};
     };
 
     /**
@@ -248,11 +323,28 @@ namespace tls {
      * Typically these should contain enough information
      * to validate the remote certificate (i.e. trust info).
      *
-     * \param name An optional expected server name for the remote end point
+     * ATTN: The method is going to be deprecated
+     *
+     * \param name The expected server name for the remote end point
      */
     /// @{
-    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, sstring name = {});
-    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, socket_address local, sstring name = {});
+    [[deprecated("Use overload with tls_options parameter")]]
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, sstring name);
+    [[deprecated("Use overload with tls_options parameter")]]
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, socket_address local, sstring name);
+    /// @}
+
+    /**
+     * Creates a TLS client connection using the default network stack and the
+     * supplied credentials.
+     * Typically these should contain enough information
+     * to validate the remote certificate (i.e. trust info).
+     *
+     * \param options Optional additional session configuration
+     */
+    /// @{
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, tls_options option = {});
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, socket_address local, tls_options options = {});
     /// @}
 
     /**
@@ -261,16 +353,47 @@ namespace tls {
      * Typically these should contain enough information
      * to validate the remote certificate (i.e. trust info).
      *
-     * \param name An optional expected server name for the remote end point
+     * ATTN: The method is going to be deprecated
+     *
+     * \param name The expected server name for the remote end point
      */
     /// @{
-    ::seastar::socket socket(shared_ptr<certificate_credentials>, sstring name = {});
+    [[deprecated("Use overload with tls_options parameter")]]
+    ::seastar::socket socket(shared_ptr<certificate_credentials>, sstring name);
     /// @}
 
-    /** Wraps an existing connection in SSL/TLS. */
+    /**
+     * Creates a socket through which a TLS client connection can be created,
+     * using the default network stack and the supplied credentials.
+     * Typically these should contain enough information
+     * to validate the remote certificate (i.e. trust info).
+     *
+     * \param options Optional additional session configuration
+     */
     /// @{
-    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, sstring name = {});
+    ::seastar::socket socket(shared_ptr<certificate_credentials>, tls_options options = {});
+    /// @}
+
+    /**
+     * Wraps an existing connection in SSL/TLS.
+     *
+     * ATTN: The method is going to be deprecated
+     *
+     * \param name The expected server name for the remote end point
+     */
+    /// @{
+    [[deprecated("Use overload with tls_options parameter")]]
+    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, sstring name);
     future<connected_socket> wrap_server(shared_ptr<server_credentials>, connected_socket&&);
+    /// @}
+
+    /**
+     * Wraps an existing connection in SSL/TLS.
+     *
+     * \param options Optional additional session configuration
+     */
+    /// @{
+    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, tls_options options = {});
     /// @}
 
     /**
@@ -284,6 +407,92 @@ namespace tls {
     // Wraps an existing server socket in SSL
     server_socket listen(shared_ptr<server_credentials>, server_socket);
     /// @}
-}
-}
 
+    /**
+     * Get distinguished name from the leaf certificate in the certificate chain that
+     * the connected peer is using.
+     * This function forces the TLS handshake. If the handshake didn't happen before the
+     * call to 'get_dn_information' it will be completed when the returned future will become
+     * ready.
+     * The function returns DN information on success. If the peer didn't send the certificate
+     * during the handshake the function returns nullopt. If the socket is not connected the
+     * system_error exception will be thrown.
+     */
+    future<std::optional<session_dn>> get_dn_information(connected_socket& socket);
+
+    /**
+     * Subject alt name types. 
+    */
+    enum class subject_alt_name_type {
+        dnsname = 1, // string value representing a 'DNS' entry
+        rfc822name, // string value representing an 'email' entry 
+        uri, // string value representing an 'uri' entry
+        ipaddress, // inet_address value representing an 'IP' entry
+        othername, // string value 
+        dn, // string value 
+    };
+
+    // Subject alt name entry
+    struct subject_alt_name {
+        using value_type = std::variant<
+            sstring,
+            net::inet_address
+        >;
+        subject_alt_name_type type;
+        value_type value;
+    };
+
+    /**
+     * Returns the alt name entries of matching types, or all entries if 'types' is empty
+     * The values are extracted from the client authentication certificate, if available.
+     * If no certificate authentication is used in the connection, en empty list is returned.
+     * 
+     * If the socket is not connected a system_error exception will be thrown.
+     * If the socket is not a TLS socket an exception will be thrown.
+    */
+    future<std::vector<subject_alt_name>> get_alt_name_information(connected_socket& socket, std::unordered_set<subject_alt_name_type> types = {});
+
+    std::ostream& operator<<(std::ostream&, const subject_alt_name::value_type&);
+    std::ostream& operator<<(std::ostream&, const subject_alt_name&);
+
+    /**
+     * Alt name to string. 
+     * Note: because naming of alternative names is inconsistent between tools,
+     * and because openssl is probably more popular when creating certs anyway,
+     * this routine will be inconsistent with both gnutls and openssl (though more
+     * in line with the latter) and name the constants as follows:
+     * 
+     * dnsname: "DNS"
+     * rfc822name: "EMAIL"
+     * uri: "URI"
+     * ipaddress "IP"
+     * othername: "OTHERNAME"
+     * dn: "DIRNAME"
+    */
+    std::string_view format_as(subject_alt_name_type);
+    std::ostream& operator<<(std::ostream&, subject_alt_name_type);
+
+    /**
+     * Error handling.
+     * 
+     * The error_category instance used by exceptions thrown by TLS
+     */
+    const std::error_category& error_category();
+
+    /**
+     * The more common error codes encountered in TLS.
+     * Not an exhaustive list. Add exports as needed.
+     */
+    extern const int ERROR_UNKNOWN_COMPRESSION_ALGORITHM;
+    extern const int ERROR_UNKNOWN_CIPHER_TYPE;
+    extern const int ERROR_INVALID_SESSION;
+    extern const int ERROR_UNEXPECTED_HANDSHAKE_PACKET;
+    extern const int ERROR_UNKNOWN_CIPHER_SUITE;
+    extern const int ERROR_UNKNOWN_ALGORITHM;
+    extern const int ERROR_UNSUPPORTED_SIGNATURE_ALGORITHM;
+    extern const int ERROR_SAFE_RENEGOTIATION_FAILED;
+    extern const int ERROR_UNSAFE_RENEGOTIATION_DENIED;
+    extern const int ERROR_UNKNOWN_SRP_USERNAME;
+    extern const int ERROR_PREMATURE_TERMINATION;
+}
+}

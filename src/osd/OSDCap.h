@@ -29,13 +29,14 @@
 #include <ostream>
 using std::ostream;
 
-#include "include/types.h"
-#include "OpRequest.h"
-
 #include <list>
 #include <vector>
 #include <boost/optional.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
+
+#include "include/types.h"
+#include "osd/osd_op_util.h"
+
 
 static const __u8 OSD_CAP_R     = (1 << 1);      // read
 static const __u8 OSD_CAP_W     = (1 << 2);      // write
@@ -179,7 +180,7 @@ struct OSDCapGrant {
   OSDCapMatch match;
   OSDCapSpec spec;
   OSDCapProfile profile;
-  string network;
+  std::string network;
   entity_addr_t network_parsed;
   unsigned network_prefix = 0;
   bool network_valid = true;
@@ -190,14 +191,14 @@ struct OSDCapGrant {
 
   OSDCapGrant() {}
   OSDCapGrant(const OSDCapMatch& m, const OSDCapSpec& s,
-	      boost::optional<string> n = {})
+	      boost::optional<std::string> n = {})
     : match(m), spec(s) {
     if (n) {
       set_network(*n);
     }
   }
   explicit OSDCapGrant(const OSDCapProfile& profile,
-		       boost::optional<string> n = {})
+		       boost::optional<std::string> n = {})
     : profile(profile) {
     if (n) {
       set_network(*n);
@@ -205,17 +206,18 @@ struct OSDCapGrant {
     expand_profile();
   }
 
-  void set_network(const string& n);
+  void set_network(const std::string& n);
 
   bool allow_all() const;
-  bool is_capable(const string& pool_name, const string& ns,
+  bool is_capable(const std::string& pool_name, const std::string& ns,
 		  const OSDCapPoolTag::app_map_t& application_metadata,
-                  const string& object, bool op_may_read, bool op_may_write,
+                  const std::string& object, bool op_may_read, bool op_may_write,
                   const std::vector<OpInfo::ClassInfo>& classes,
 		  const entity_addr_t& addr,
                   std::vector<bool>* class_allowed) const;
 
   void expand_profile();
+  std::string to_string();
 };
 
 ostream& operator<<(ostream& out, const OSDCapGrant& g);
@@ -230,6 +232,8 @@ struct OSDCap {
   bool allow_all() const;
   void set_allow_all();
   bool parse(const std::string& str, ostream *err=NULL);
+  bool merge(OSDCap newcap);
+  std::string to_string();
 
   /**
    * check if we are capable of something
@@ -243,17 +247,17 @@ struct OSDCap {
    * @param object name of the object we are accessing
    * @param op_may_read whether the operation may need to read
    * @param op_may_write whether the operation may need to write
-   * @param classes (class-name, rd, wr, whitelisted-flag) tuples
+   * @param classes (class-name, rd, wr, allowed-flag) tuples
    * @return true if the operation is allowed, false otherwise
    */
-  bool is_capable(const string& pool_name, const string& ns,
+  bool is_capable(const std::string& pool_name, const std::string& ns,
 		  const OSDCapPoolTag::app_map_t& application_metadata,
-		  const string& object, bool op_may_read, bool op_may_write,
+		  const std::string& object, bool op_may_read, bool op_may_write,
 		  const std::vector<OpInfo::ClassInfo>& classes,
 		  const entity_addr_t& addr) const;
 };
 
-static inline ostream& operator<<(ostream& out, const OSDCap& cap) 
+inline std::ostream& operator<<(std::ostream& out, const OSDCap& cap) 
 {
   return out << "osdcap" << cap.grants;
 }

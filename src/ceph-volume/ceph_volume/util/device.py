@@ -8,13 +8,14 @@ from ceph_volume.api import lvm
 from ceph_volume.util import disk, system
 from ceph_volume.util.lsmdisk import LSMDisk
 from ceph_volume.util.constants import ceph_disk_guids
+from ceph_volume.util.disk import allow_loop_devices
 
 
 logger = logging.getLogger(__name__)
 
 
 report_template = """
-{dev:<25} {size:<12} {rot!s:<7} {available!s:<9} {model}"""
+{dev:<25} {size:<12} {device_nodes:<15} {rot!s:<7} {available!s:<9} {model}"""
 
 
 def encryption_status(abspath):
@@ -32,13 +33,30 @@ class Devices(object):
     A container for Device instances with reporting
     """
 
-    def __init__(self, filter_for_batch=False, with_lsm=False):
+    def __init__(self,
+                 filter_for_batch=False,
+                 with_lsm=False,
+                 list_all=False):
+        lvs = lvm.get_lvs()
+        lsblk_all = disk.lsblk_all()
+        all_devices_vgs = lvm.get_all_devices_vgs()
         if not sys_info.devices:
             sys_info.devices = disk.get_devices()
-        self.devices = [Device(k, with_lsm) for k in
-                            sys_info.devices.keys()]
-        if filter_for_batch:
-            self.devices = [d for d in self.devices if d.available_lvm_batch]
+        self._devices = [Device(k,
+                                with_lsm,
+                                lvs=lvs,
+                                lsblk_all=lsblk_all,
+                                all_devices_vgs=all_devices_vgs) for k in
+                         sys_info.devices.keys()]
+        self.devices = []
+        for device in self._devices:
+            if filter_for_batch and not device.available_lvm_batch:
+                continue
+            if device.is_lv and not list_all:
+                continue
+            if device.is_partition and not list_all:
+                continue
+            self.devices.append(device)
 
     def pretty_report(self):
         output = [
@@ -48,6 +66,8 @@ class Devices(object):
                 rot='rotates',
                 model='Model name',
                 available='available',
+                device_nodes='Device nodes',
+
             )]
         for device in sorted(self.devices):
             output.append(device.report())
@@ -66,6 +86,7 @@ class Device(object):
      {attr:<25} {value}"""
 
     report_fields = [
+        'ceph_device',
         'rejected_reasons',
         'available',
         'path',
@@ -74,6 +95,7 @@ class Device(object):
         'lsm_data',
     ]
     pretty_report_sys_fields = [
+        'actuators',
         'human_readable_size',
         'model',
         'removable',
@@ -88,21 +110,36 @@ class Device(object):
     # unittests
     lvs = []
 
-    def __init__(self, path, with_lsm=False):
+    def __init__(self, path, with_lsm=False, lvs=None, lsblk_all=None, all_devices_vgs=None):
         self.path = path
         # LVs can have a vg/lv path, while disks will have /dev/sda
-        self.abspath = path
+        self.symlink = None
+        # check if we are a symlink
+        if os.path.islink(self.path):
+            self.symlink = self.path
+            real_path = os.path.realpath(self.path)
+            # check if we are not a device mapper
+            if "dm-" not in real_path:
+                self.path = real_path
+        if not sys_info.devices.get(self.path):
+            sys_info.devices = disk.get_devices()
+        self.sys_api = sys_info.devices.get(self.path, {})
+        self.partitions = self._get_partitions()
         self.lv_api = None
-        self.lvs = []
+        self.lvs = [] if not lvs else lvs
+        self.lsblk_all = lsblk_all
+        self.all_devices_vgs = all_devices_vgs
         self.vgs = []
         self.vg_name = None
         self.lv_name = None
         self.disk_api = {}
-        self.blkid_api = {}
-        self.sys_api = {}
+        self.blkid_api = None
         self._exists = None
         self._is_lvm_member = None
+        self.ceph_device = False
         self._parse()
+        if self.path in sys_info.devices.keys():
+            self.device_nodes = sys_info.devices[self.path]['device_nodes']
         self.lsm_data = self.fetch_lsm(with_lsm)
 
         self.available_lvm, self.rejected_reasons_lvm = self._check_lvm_reject_reasons()
@@ -146,40 +183,64 @@ class Device(object):
     def __hash__(self):
         return hash(self.path)
 
+    def load_blkid_api(self):
+        if self.blkid_api is None:
+            self.blkid_api = disk.blkid(self.path)
+
     def _parse(self):
-        if not sys_info.devices:
-            sys_info.devices = disk.get_devices()
-        self.sys_api = sys_info.devices.get(self.abspath, {})
+        lv = None
         if not self.sys_api:
             # if no device was found check if we are a partition
-            partname = self.abspath.split('/')[-1]
+            partname = self.path.split('/')[-1]
             for device, info in sys_info.devices.items():
                 part = info['partitions'].get(partname, {})
                 if part:
                     self.sys_api = part
                     break
 
-        # if the path is not absolute, we have 'vg/lv', let's use LV name
-        # to get the LV.
-        if self.path[0] == '/':
-            lv = lvm.get_single_lv(filters={'lv_path': self.path})
+        if self.lvs:
+            for _lv in self.lvs:
+                # if the path is not absolute, we have 'vg/lv', let's use LV name
+                # to get the LV.
+                if self.path[0] == '/':
+                    if _lv.lv_path == self.path:
+                        lv = _lv
+                        break
+                else:
+                    vgname, lvname = self.path.split('/')
+                    if _lv.lv_name == lvname and _lv.vg_name == vgname:
+                        lv = _lv
+                        break
         else:
-            vgname, lvname = self.path.split('/')
-            lv = lvm.get_single_lv(filters={'lv_name': lvname,
-                                            'vg_name': vgname})
+            if self.path[0] == '/':
+                lv = lvm.get_single_lv(filters={'lv_path': self.path})
+            else:
+                vgname, lvname = self.path.split('/')
+                lv = lvm.get_single_lv(filters={'lv_name': lvname,
+                                                'vg_name': vgname})
+
         if lv:
             self.lv_api = lv
             self.lvs = [lv]
-            self.abspath = lv.lv_path
+            self.path = lv.lv_path
             self.vg_name = lv.vg_name
             self.lv_name = lv.name
+            self.ceph_device = lvm.is_ceph_device(lv)
         else:
-            dev = disk.lsblk(self.path)
-            self.blkid_api = disk.blkid(self.path)
+            self.lvs = []
+            if self.lsblk_all:
+                for dev in self.lsblk_all:
+                    if dev['NAME'] == os.path.basename(self.path):
+                        break
+            else:
+                dev = disk.lsblk(self.path)
             self.disk_api = dev
             device_type = dev.get('TYPE', '')
             # always check is this is an lvm member
-            if device_type in ['part', 'disk']:
+            valid_types = ['part', 'disk', 'mpath']
+            if allow_loop_devices():
+                valid_types.append('loop')
+            if device_type in valid_types:
                 self._set_lvm_membership()
 
         self.ceph_disk = CephDiskDevice(self)
@@ -192,7 +253,7 @@ class Device(object):
             prefix = 'Partition'
         elif self.is_device:
             prefix = 'Raw Device'
-        return '<%s: %s>' % (prefix, self.abspath)
+        return '<%s: %s>' % (prefix, self.path)
 
     def pretty_report(self):
         def format_value(v):
@@ -224,11 +285,12 @@ class Device(object):
 
     def report(self):
         return report_template.format(
-            dev=self.abspath,
+            dev=self.path,
             size=self.size_human,
             rot=self.rotational,
             available=self.available,
             model=self.model,
+            device_nodes=self.device_nodes
         )
 
     def json_report(self):
@@ -244,7 +306,7 @@ class Device(object):
         """
         props = ['ID_VENDOR', 'ID_MODEL', 'ID_MODEL_ENC', 'ID_SERIAL_SHORT', 'ID_SERIAL',
                  'ID_SCSI_SERIAL']
-        p = disk.udevadm_property(self.abspath, props)
+        p = disk.udevadm_property(self.path, props)
         if p.get('ID_MODEL','').startswith('LVM PV '):
             p['ID_MODEL'] = p.get('ID_MODEL_ENC', '').replace('\\x20', ' ').strip()
         if 'ID_VENDOR' in p and 'ID_MODEL' in p and 'ID_SCSI_SERIAL' in p:
@@ -262,7 +324,9 @@ class Device(object):
             # retrieve device_id on FreeBSD. Still figuring out if/how the
             # python ioctl implementation does that on FreeBSD
             dev_id = ''
-        dev_id.replace(' ', '_')
+        dev_id = dev_id.replace(' ', '_')
+        while '__' in dev_id:
+            dev_id = dev_id.replace('__', '_')
         return dev_id
 
     def _set_lvm_membership(self):
@@ -271,36 +335,51 @@ class Device(object):
             # VGs, should we consider it as part of LVM? We choose not to
             # here, because most likely, we need to use VGs from this PV.
             self._is_lvm_member = False
-            for path in self._get_pv_paths():
-                vgs = lvm.get_device_vgs(path)
+            device_to_check = [self.path]
+            device_to_check.extend(self.partitions)
+
+            # a pv can only be in one vg, so this should be safe
+            # FIXME: While the above assumption holds, sda1 and sda2
+            # can each host a PV and VG. I think the vg_name property is
+            # actually unused (not 100% sure) and can simply be removed
+            vgs = None
+            if not self.all_devices_vgs:
+                self.all_devices_vgs = lvm.get_all_devices_vgs()
+            for path in device_to_check:
+                for dev_vg in self.all_devices_vgs:
+                    if dev_vg.pv_name == path:
+                        vgs = [dev_vg]
                 if vgs:
                     self.vgs.extend(vgs)
-                    # a pv can only be in one vg, so this should be safe
-                    # FIXME: While the above assumption holds, sda1 and sda2
-                    # can each host a PV and VG. I think the vg_name property is
-                    # actually unused (not 100% sure) and can simply be removed
                     self.vg_name = vgs[0]
                     self._is_lvm_member = True
                     self.lvs.extend(lvm.get_device_lvs(path))
-        return self._is_lvm_member
+                if self.lvs:
+                    self.ceph_device = any([True if lv.tags.get('ceph.osd_id') else False for lv in self.lvs])
 
-    def _get_pv_paths(self):
+    def _get_partitions(self):
         """
         For block devices LVM can reside on the raw block device or on a
         partition. Return a list of paths to be checked for a pv.
         """
-        paths = [self.abspath]
-        path_dir = os.path.dirname(self.abspath)
-        for part in self.sys_api.get('partitions', {}).keys():
-            paths.append(os.path.join(path_dir, part))
-        return paths
+        partitions = []
+        path_dir = os.path.dirname(self.path)
+        for partition in self.sys_api.get('partitions', {}).keys():
+            partitions.append(os.path.join(path_dir, partition))
+        return partitions
 
     @property
     def exists(self):
-        return os.path.exists(self.abspath)
+        return os.path.exists(self.path)
+
+    @property
+    def has_fs(self):
+        self.load_blkid_api()
+        return 'TYPE' in self.blkid_api
 
     @property
     def has_gpt_headers(self):
+        self.load_blkid_api()
         return self.blkid_api.get("PTTYPE") == "gpt"
 
     @property
@@ -348,18 +427,27 @@ class Device(object):
 
     @property
     def is_ceph_disk_member(self):
-        is_member = self.ceph_disk.is_member
+        def is_member(device):
+            return 'ceph' in device.get('PARTLABEL', '') or \
+                device.get('PARTTYPE', '') in ceph_disk_guids.keys()
+        # If we come from Devices(), self.lsblk_all is set already.
+        # Otherwise, we have to grab the data.
+        details = self.lsblk_all or disk.lsblk_all()
+        _is_member = False
         if self.sys_api.get("partitions"):
             for part in self.sys_api.get("partitions").keys():
-                part = Device("/dev/%s" % part)
-                if part.is_ceph_disk_member:
-                    is_member = True
-                    break
-        return is_member
+                for dev in details:
+                    if part.startswith(dev['NAME']):
+                        if is_member(dev):
+                            _is_member = True
+                return _is_member
+        else:
+            return is_member(self.disk_api)
+        raise RuntimeError(f"Couln't check if device {self.path} is a ceph-disk member.")
 
     @property
     def has_bluestore_label(self):
-        return disk.has_bluestore_label(self.abspath)
+        return disk.has_bluestore_label(self.path)
 
     @property
     def is_mapper(self):
@@ -367,10 +455,13 @@ class Device(object):
 
     @property
     def device_type(self):
-        if self.disk_api:
-            return self.disk_api['TYPE']
+        self.load_blkid_api()
+        if 'type' in self.sys_api:
+            return self.sys_api.get('type')
+        elif self.disk_api:
+            return self.disk_api.get('TYPE')
         elif self.blkid_api:
-            return self.blkid_api['TYPE']
+            return self.blkid_api.get('TYPE')
 
     @property
     def is_mpath(self):
@@ -382,26 +473,31 @@ class Device(object):
 
     @property
     def is_partition(self):
+        self.load_blkid_api()
         if self.disk_api:
-            return self.disk_api['TYPE'] == 'part'
+            return self.disk_api.get('TYPE') == 'part'
         elif self.blkid_api:
-            return self.blkid_api['TYPE'] == 'part'
+            return self.blkid_api.get('TYPE') == 'part'
         return False
 
     @property
     def is_device(self):
+        self.load_blkid_api()
         api = None
         if self.disk_api:
             api = self.disk_api
         elif self.blkid_api:
             api = self.blkid_api
         if api:
-            return self.device_type in ['disk', 'device', 'mpath']
+            valid_types = ['disk', 'device', 'mpath']
+            if allow_loop_devices():
+                valid_types.append('loop')
+            return self.device_type in valid_types
         return False
 
     @property
     def is_acceptable_device(self):
-        return self.is_device or self.is_partition
+        return self.is_device or self.is_partition or self.is_lv
 
     @property
     def is_encrypted(self):
@@ -409,6 +505,7 @@ class Device(object):
         Only correct for LVs, device mappers, and partitions. Will report a ``None``
         for raw devices.
         """
+        self.load_blkid_api()
         crypt_reports = [self.blkid_api.get('TYPE', ''), self.disk_api.get('FSTYPE', '')]
         if self.is_lv:
             # if disk APIs are reporting this is encrypted use that:
@@ -421,7 +518,7 @@ class Device(object):
         elif self.is_partition:
             return 'crypto_LUKS' in crypt_reports
         elif self.is_mapper:
-            active_mapper = encryption_status(self.abspath)
+            active_mapper = encryption_status(self.path)
             if active_mapper:
                 # normalize a bit to ensure same values regardless of source
                 encryption_type = active_mapper['type'].lower().strip('12')  # turn LUKS1 or LUKS2 into luks
@@ -436,6 +533,15 @@ class Device(object):
         # only filter out data devices as journals could potentially be reused
         osd_ids = [lv.tags.get("ceph.osd_id") is not None for lv in self.lvs
                    if lv.tags.get("ceph.type") in ["data", "block"]]
+        return any(osd_ids)
+
+    @property
+    def journal_used_by_ceph(self):
+        # similar to used_by_ceph() above. This is for 'journal' devices (db/wal/..)
+        # needed by get_lvm_fast_allocs() in devices/lvm/batch.py
+        # see https://tracker.ceph.com/issues/59640
+        osd_ids = [lv.tags.get("ceph.osd_id") is not None for lv in self.lvs
+                   if lv.tags.get("ceph.type") in ["db", "wal"]]
         return any(osd_ids)
 
     @property
@@ -485,9 +591,8 @@ class Device(object):
 
     def _check_generic_reject_reasons(self):
         reasons = [
-            ('removable', 1, 'removable'),
-            ('ro', 1, 'read-only'),
-            ('locked', 1, 'locked'),
+            ('id_bus', 'usb', 'id_bus'),
+            ('ro', '1', 'read-only'),
         ]
         rejected = [reason for (k, v, reason) in reasons if
                     self.sys_api.get(k, '') == v]
@@ -506,7 +611,7 @@ class Device(object):
         except OSError as e:
             # likely failed to open the device. assuming it is BlueStore is the safest option
             # so that a possibly-already-existing OSD doesn't get overwritten
-            logger.error('failed to determine if device {} is BlueStore. device should not be used to avoid false negatives. err: {}'.format(self.abspath, e))
+            logger.error('failed to determine if device {} is BlueStore. device should not be used to avoid false negatives. err: {}'.format(self.path, e))
             rejected.append('Failed to determine if device is BlueStore')
 
         if self.is_partition:
@@ -516,13 +621,15 @@ class Device(object):
             except OSError as e:
                 # likely failed to open the device. assuming the parent is BlueStore is the safest
                 # option so that a possibly-already-existing OSD doesn't get overwritten
-                logger.error('failed to determine if partition {} (parent: {}) has a BlueStore parent. partition should not be used to avoid false negatives. err: {}'.format(self.abspath, self.parent_device, e))
+                logger.error('failed to determine if partition {} (parent: {}) has a BlueStore parent. partition should not be used to avoid false negatives. err: {}'.format(self.path, self.parent_device, e))
                 rejected.append('Failed to determine if parent device is BlueStore')
 
         if self.has_gpt_headers:
             rejected.append('Has GPT headers')
         if self.has_partitions:
             rejected.append('Has partitions')
+        if self.has_fs:
+            rejected.append('Has a FileSystem')
         return rejected
 
     def _check_lvm_reject_reasons(self):
@@ -535,6 +642,7 @@ class Device(object):
             # only check generic if no vgs are present. Vgs might hold lvs and
             # that might cause 'locked' to trigger
             rejected.extend(self._check_generic_reject_reasons())
+
         return len(rejected) == 0, rejected
 
     def _check_raw_reject_reasons(self):

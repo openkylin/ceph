@@ -4,12 +4,12 @@ Deploy and configure Barbican for Teuthology
 import argparse
 import contextlib
 import logging
-import six
-from six.moves import http_client
-from six.moves.urllib.parse import urlparse
+import http
 import json
 import time
 import math
+
+from urllib.parse import urlparse
 
 from teuthology import misc as teuthology
 from teuthology import contextutil
@@ -96,8 +96,13 @@ def setup_venv(ctx, config):
     assert isinstance(config, dict)
     log.info('Setting up virtualenv for barbican...')
     for (client, _) in config.items():
-        run_in_barbican_dir(ctx, client, ['virtualenv', '.barbicanenv'])
-        run_in_barbican_venv(ctx, client, ['pip', 'install', 'pytz', '-e', get_barbican_dir(ctx)])
+        run_in_barbican_dir(ctx, client,
+                            ['python3', '-m', 'venv', '.barbicanenv'])
+        run_in_barbican_venv(ctx, client,
+                             ['pip', 'install', '--upgrade', 'pip'])
+        run_in_barbican_venv(ctx, client,
+                             ['pip', 'install', 'pytz',
+                              '-e', get_barbican_dir(ctx)])
     yield
 
 def assign_ports(ctx, config, initial_port):
@@ -131,9 +136,8 @@ def set_authtoken_params(ctx, cclient, cconfig):
                         ['sed', '-i',
                          '/[[]filter:authtoken]/{p;s##'+'auth_uri = {}'.format(url)+'#;}',
                          'etc/barbican/barbican-api-paste.ini'])
-    admin_host, admin_port = ctx.keystone.admin_endpoints[keystone_role]
-    admin_url = 'http://{host}:{port}/v3'.format(host=admin_host,
-                                                 port=admin_port)
+    admin_url = 'http://{host}:{port}/v3'.format(host=public_host,
+                                                 port=public_port)
     run_in_barbican_dir(ctx, cclient,
                         ['sed', '-i',
                          '/[[]filter:authtoken]/{p;s##'+'auth_url = {}'.format(admin_url)+'#;}',
@@ -152,12 +156,6 @@ def fix_barbican_api(ctx, cclient):
                          '/prop_dir =/ s#etc/barbican#{}/etc/barbican#'.format(get_barbican_dir(ctx)),
                          'bin/barbican-api'])
 
-def copy_policy_json(ctx, cclient):
-    run_in_barbican_dir(ctx, cclient,
-                        ['cp',
-                         get_barbican_dir(ctx)+'/etc/barbican/policy.json',
-                         get_barbican_dir(ctx)])
-
 def create_barbican_conf(ctx, cclient):
     barbican_host, barbican_port = ctx.barbican.endpoints[cclient]
     barbican_url = 'http://{host}:{port}'.format(host=barbican_host,
@@ -168,6 +166,14 @@ def create_barbican_conf(ctx, cclient):
                         ['bash', '-c',
                          'echo -n -e "[DEFAULT]\nhost_href=' + barbican_url + '\n" ' + \
                          '>barbican.conf'])
+
+    log.info("run barbican db upgrade")
+    config_path = get_barbican_dir(ctx) + '/barbican.conf'
+    run_in_barbican_venv(ctx, cclient, ['barbican-manage', '--config-file', config_path,
+                                        'db', 'upgrade'])
+    log.info("run barbican db sync_secret_stores")
+    run_in_barbican_venv(ctx, cclient, ['barbican-manage', '--config-file', config_path,
+                                        'db', 'sync_secret_stores'])
 
 @contextlib.contextmanager
 def configure_barbican(ctx, config):
@@ -184,7 +190,6 @@ def configure_barbican(ctx, config):
     set_authtoken_params(ctx, cclient, cconfig)
     fix_barbican_api(ctx, cclient)
     fix_barbican_api_paste(ctx, cclient)
-    copy_policy_json(ctx, cclient)
     create_barbican_conf(ctx, cclient)
     try:
         yield
@@ -253,7 +258,7 @@ def create_secrets(ctx, config):
                                                  port=barbican_port)
     log.info("barbican_url=%s", barbican_url)
     #fetching user_id of user that gets secrets for radosgw
-    token_req = http_client.HTTPConnection(keystone_host, keystone_port, timeout=30)
+    token_req = http.client.HTTPConnection(keystone_host, keystone_port, timeout=30)
     token_req.request(
         'POST',
         '/v3/auth/tokens',
@@ -283,7 +288,7 @@ def create_secrets(ctx, config):
             rgw_access_user_resp.status < 300):
         raise Exception("Cannot authenticate user "+rgw_user["username"]+" for secret creation")
     #    baru_resp = json.loads(baru_req.data)
-    rgw_access_user_data = json.loads(six.ensure_str(rgw_access_user_resp.read()))
+    rgw_access_user_data = json.loads(rgw_access_user_resp.read().decode())
     rgw_user_id = rgw_access_user_data['token']['user']['id']
     if 'secrets' in cconfig:
         for secret in cconfig['secrets']:
@@ -298,7 +303,7 @@ def create_secrets(ctx, config):
             if 'password' not in secret:
                 raise ConfigError('barbican.secrets must have "password" field')
 
-            token_req = http_client.HTTPConnection(keystone_host, keystone_port, timeout=30)
+            token_req = http.client.HTTPConnection(keystone_host, keystone_port, timeout=30)
             token_req.request(
                 'POST',
                 '/v3/auth/tokens',
@@ -346,7 +351,7 @@ def create_secrets(ctx, config):
                     "payload_content_encoding": "base64"
                 })
 
-            sec_req = http_client.HTTPConnection(barbican_host, barbican_port, timeout=30)
+            sec_req = http.client.HTTPConnection(barbican_host, barbican_port, timeout=30)
             try:
                 sec_req.request(
                     'POST',
@@ -364,7 +369,7 @@ def create_secrets(ctx, config):
             if not (barbican_sec_resp.status >= 200 and
                     barbican_sec_resp.status < 300):
                 raise Exception("Cannot create secret")
-            barbican_data = json.loads(six.ensure_str(barbican_sec_resp.read()))
+            barbican_data = json.loads(barbican_sec_resp.read().decode())
             if 'secret_ref' not in barbican_data:
                 raise ValueError("Malformed secret creation response")
             secret_ref = barbican_data["secret_ref"]
@@ -377,7 +382,7 @@ def create_secrets(ctx, config):
                         "project-access": True
                     }
                 })
-            acl_req = http_client.HTTPConnection(secret_url_parsed.netloc, timeout=30)
+            acl_req = http.client.HTTPConnection(secret_url_parsed.netloc, timeout=30)
             acl_req.request(
                 'PUT',
                 secret_url_parsed.path+'/acl',

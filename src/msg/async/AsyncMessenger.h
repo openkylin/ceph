@@ -18,6 +18,7 @@
 #define CEPH_ASYNCMESSENGER_H
 
 #include <map>
+#include <optional>
 
 #include "include/types.h"
 #include "include/xlist.h"
@@ -44,9 +45,9 @@ class AsyncMessenger;
  */
 class Processor {
   AsyncMessenger *msgr;
-  NetHandler net;
+  ceph::NetHandler net;
   Worker *worker;
-  vector<ServerSocket> listen_sockets;
+  std::vector<ServerSocket> listen_sockets;
   EventCallbackRef listen_handler;
 
   class C_processor_accept;
@@ -57,7 +58,7 @@ class Processor {
 
   void stop();
   int bind(const entity_addrvec_t &bind_addrs,
-	   const set<int>& avoid_ports,
+	   const std::set<int>& avoid_ports,
 	   entity_addrvec_t* bound_addrs);
   void start();
   void accept();
@@ -82,7 +83,7 @@ public:
    * be a value that will be repeated if the daemon restarts.
    */
   AsyncMessenger(CephContext *cct, entity_name_t name, const std::string &type,
-                 string mname, uint64_t _nonce);
+                 std::string mname, uint64_t _nonce);
 
   /**
    * Destroy the AsyncMessenger. Pretty simple since all the work is done
@@ -94,7 +95,6 @@ public:
    * @{
    */
   bool set_addr_unknowns(const entity_addrvec_t &addr) override;
-  void set_addrs(const entity_addrvec_t &addrs) override;
 
   int get_dispatch_queue_len() override {
     return dispatch_queue.get_queue_len();
@@ -114,9 +114,11 @@ public:
     cluster_protocol = p;
   }
 
-  int bind(const entity_addr_t& bind_addr) override;
-  int rebind(const set<int>& avoid_ports) override;
-  int bindv(const entity_addrvec_t& bind_addrs) override;
+  int bind(const entity_addr_t& bind_addr,
+	   std::optional<entity_addrvec_t> public_addrs=std::nullopt) override;
+  int rebind(const std::set<int>& avoid_ports) override;
+  int bindv(const entity_addrvec_t& bind_addrs,
+	    std::optional<entity_addrvec_t> public_addrs=std::nullopt) override;
 
   int client_bind(const entity_addr_t& bind_addr) override;
 
@@ -230,10 +232,18 @@ private:
   bool need_addr = true;
 
   /**
-   * set to bind addresses if bind was called before NetworkStack was ready to
-   * bind
+   * set to bind addresses if bind or bindv were called before NetworkStack
+   * was ready to bind
    */
   entity_addrvec_t pending_bind_addrs;
+
+  /**
+   * set to public addresses (those announced by the msgr's protocols).
+   * they are stored to handle the cases when either:
+   *   a) bind or bindv were called before NetworkStack was ready to bind,
+   *   b) rebind is called down the road.
+   */
+  std::optional<entity_addrvec_t> saved_public_addrs;
 
   /**
    * false; set to true if a pending bind exists
@@ -268,10 +278,10 @@ private:
    *
    * These are not yet in the conns map.
    */
-  set<AsyncConnectionRef> accepting_conns;
+  std::set<AsyncConnectionRef> accepting_conns;
 
   /// anonymous outgoing connections
-  set<AsyncConnectionRef> anon_conns;
+  std::set<AsyncConnectionRef> anon_conns;
 
   /**
    * list of connection are closed which need to be clean up
@@ -285,7 +295,7 @@ private:
    * AsyncConnection in this set.
    */
   ceph::mutex deleted_lock = ceph::make_mutex("AsyncMessenger::deleted_lock");
-  set<AsyncConnectionRef> deleted_conns;
+  std::set<AsyncConnectionRef> deleted_conns;
 
   EventCallbackRef reap_handler;
 

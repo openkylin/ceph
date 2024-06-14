@@ -8,11 +8,16 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
+#ifdef SEASTAR_MODULE
+module;
+module seastar;
+#else
 #include <seastar/http/mime_types.hh>
+#endif
 
 namespace seastar {
 
-namespace httpd {
+namespace http {
 namespace mime_types {
 
 struct mapping {
@@ -26,6 +31,7 @@ struct mapping {
         { "js", "text/javascript" },
         { "html", "text/html" },
         { "jpg", "image/jpeg" },
+        { "svg", "image/svg+xml" },
         { "png", "image/png" },
         { "txt", "text/plain" },
         { "ico", "image/x-icon" },
@@ -45,6 +51,6 @@ const char* extension_to_type(const sstring& extension)
 
 } // namespace mime_types
 
-} // httpd
+} // http
 
 }

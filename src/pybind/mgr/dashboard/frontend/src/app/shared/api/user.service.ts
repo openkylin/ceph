@@ -1,13 +1,13 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
+
 import { Observable, of as observableOf } from 'rxjs';
 import { catchError, mapTo } from 'rxjs/operators';
 
-import { UserFormModel } from '../../core/auth/user-form/user-form.model';
-import { ApiModule } from './api.module';
+import { UserFormModel } from '~/app/core/auth/user-form/user-form.model';
 
 @Injectable({
-  providedIn: ApiModule
+  providedIn: 'root'
 })
 export class UserService {
   constructor(private http: HttpClient) {}

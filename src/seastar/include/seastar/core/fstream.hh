@@ -29,12 +29,19 @@
 // on sector boundaries.  The adapters in this file provide a byte stream
 // interface to files, while retaining the zero-copy characteristics of
 // seastar files.
-
 #include <seastar/core/file.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/internal/api-level.hh>
+#include <seastar/util/modules.hh>
+
+#ifndef SEASTAR_MODULE
+#include <cstdint>
+#endif
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 class file_input_stream_history {
     static constexpr uint64_t window_size = 4 * 1024 * 1024;
@@ -53,7 +60,9 @@ class file_input_stream_history {
 struct file_input_stream_options {
     size_t buffer_size = 8192;    ///< I/O buffer size
     unsigned read_ahead = 0;      ///< Maximum number of extra read-ahead operations
+#if SEASTAR_API_LEVEL < 7
     ::seastar::io_priority_class io_priority_class = default_priority_class();
+#endif
     lw_shared_ptr<file_input_stream_history> dynamic_adjustments = { }; ///< Input stream history, if null dynamic adjustments are disabled
 };
 
@@ -92,25 +101,32 @@ struct file_output_stream_options {
     unsigned buffer_size = 65536;
     unsigned preallocation_size = 0; ///< Preallocate extents. For large files, set to a large number (a few megabytes) to reduce fragmentation
     unsigned write_behind = 1; ///< Number of buffers to write in parallel
+#if SEASTAR_API_LEVEL < 7
     ::seastar::io_priority_class io_priority_class = default_priority_class();
+#endif
 };
-
-// Create an output_stream for writing starting at the position zero of a
-// newly created file.
-// NOTE: flush() should be the last thing to be called on a file output stream.
-output_stream<char> make_file_output_stream(
-        file file,
-        uint64_t buffer_size = 8192);
 
 /// Create an output_stream for writing starting at the position zero of a
 /// newly created file.
 /// NOTE: flush() should be the last thing to be called on a file output stream.
-output_stream<char> make_file_output_stream(
+/// Closes the file if the stream creation fails.
+future<output_stream<char>> make_file_output_stream(
         file file,
-        file_output_stream_options options);
+        uint64_t buffer_size = 8192) noexcept;
+
+/// Create an output_stream for writing starting at the position zero of a
+/// newly created file.
+/// NOTE: flush() should be the last thing to be called on a file output stream.
+/// Closes the file if the stream creation fails.
+future<output_stream<char>> make_file_output_stream(
+        file file,
+        file_output_stream_options options) noexcept;
 
 /// Create a data_sink for writing starting at the position zero of a
 /// newly created file.
-data_sink make_file_data_sink(file, file_output_stream_options);
+/// Closes the file if the sink creation fails.
+future<data_sink> make_file_data_sink(file, file_output_stream_options) noexcept;
+
+SEASTAR_MODULE_EXPORT_END
 
 }

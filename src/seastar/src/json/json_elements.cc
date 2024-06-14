@@ -19,11 +19,23 @@
  * Copyright 2015 Cloudius Systems
  */
 
-#include <seastar/json/json_elements.hh>
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
 #include <string.h>
 #include <string>
 #include <vector>
 #include <sstream>
+#include <fmt/core.h>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/core/loop.hh>
+#include <seastar/core/print.hh>
+#include <seastar/json/json_elements.hh>
+#endif
 
 namespace seastar {
 
@@ -67,7 +79,11 @@ public:
         if (element == nullptr || element->_set == false) {
             return;
         }
-        add(element->_name, element->to_string());
+        try {
+            add(element->_name, element->to_string());
+        } catch (...) {
+            std::throw_with_nested(std::runtime_error(fmt::format("Json generation failed for field: {}",element->_name)));
+        }
     }
 
     /**

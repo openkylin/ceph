@@ -2,7 +2,7 @@
 // detail/impl/win_iocp_io_context.ipp
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
-// Copyright (c) 2003-2019 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2023 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -52,7 +52,7 @@ struct win_iocp_io_context::thread_function
 
 struct win_iocp_io_context::work_finished_on_block_exit
 {
-  ~work_finished_on_block_exit()
+  ~work_finished_on_block_exit() BOOST_ASIO_NOEXCEPT_IF(false)
   {
     io_context_->work_finished();
   }
@@ -114,6 +114,7 @@ win_iocp_io_context::~win_iocp_io_context()
 {
   if (thread_.get())
   {
+    stop();
     thread_->join();
     thread_.reset();
   }
@@ -132,6 +133,7 @@ void win_iocp_io_context::shutdown()
 
   if (thread_.get())
   {
+    stop();
     thread_->join();
     thread_.reset();
     ::InterlockedDecrement(&outstanding_work_);
@@ -167,7 +169,10 @@ void win_iocp_io_context::shutdown()
   }
 
   if (timer_thread_.get())
+  {
     timer_thread_->join();
+    timer_thread_.reset();
+  }
 }
 
 boost::system::error_code win_iocp_io_context::register_handle(
@@ -199,7 +204,7 @@ size_t win_iocp_io_context::run(boost::system::error_code& ec)
   thread_call_stack::context ctx(this, this_thread);
 
   size_t n = 0;
-  while (do_one(INFINITE, ec))
+  while (do_one(INFINITE, this_thread, ec))
     if (n != (std::numeric_limits<size_t>::max)())
       ++n;
   return n;
@@ -217,7 +222,7 @@ size_t win_iocp_io_context::run_one(boost::system::error_code& ec)
   win_iocp_thread_info this_thread;
   thread_call_stack::context ctx(this, this_thread);
 
-  return do_one(INFINITE, ec);
+  return do_one(INFINITE, this_thread, ec);
 }
 
 size_t win_iocp_io_context::wait_one(long usec, boost::system::error_code& ec)
@@ -232,7 +237,7 @@ size_t win_iocp_io_context::wait_one(long usec, boost::system::error_code& ec)
   win_iocp_thread_info this_thread;
   thread_call_stack::context ctx(this, this_thread);
 
-  return do_one(usec < 0 ? INFINITE : ((usec - 1) / 1000 + 1), ec);
+  return do_one(usec < 0 ? INFINITE : ((usec - 1) / 1000 + 1), this_thread, ec);
 }
 
 size_t win_iocp_io_context::poll(boost::system::error_code& ec)
@@ -248,7 +253,7 @@ size_t win_iocp_io_context::poll(boost::system::error_code& ec)
   thread_call_stack::context ctx(this, this_thread);
 
   size_t n = 0;
-  while (do_one(0, ec))
+  while (do_one(0, this_thread, ec))
     if (n != (std::numeric_limits<size_t>::max)())
       ++n;
   return n;
@@ -266,7 +271,7 @@ size_t win_iocp_io_context::poll_one(boost::system::error_code& ec)
   win_iocp_thread_info this_thread;
   thread_call_stack::context ctx(this, this_thread);
 
-  return do_one(0, ec);
+  return do_one(0, this_thread, ec);
 }
 
 void win_iocp_io_context::stop()
@@ -284,6 +289,17 @@ void win_iocp_io_context::stop()
       }
     }
   }
+}
+
+bool win_iocp_io_context::can_dispatch()
+{
+  return thread_call_stack::contains(this) != 0;
+}
+
+void win_iocp_io_context::capture_current_exception()
+{
+  if (thread_info_base* this_thread = thread_call_stack::contains(this))
+    this_thread->capture_current_exception();
 }
 
 void win_iocp_io_context::post_deferred_completion(win_iocp_operation* op)
@@ -395,7 +411,8 @@ void win_iocp_io_context::on_completion(win_iocp_operation* op,
   }
 }
 
-size_t win_iocp_io_context::do_one(DWORD msec, boost::system::error_code& ec)
+size_t win_iocp_io_context::do_one(DWORD msec,
+    win_iocp_thread_info& this_thread, boost::system::error_code& ec)
 {
   for (;;)
   {
@@ -457,6 +474,7 @@ size_t win_iocp_io_context::do_one(DWORD msec, boost::system::error_code& ec)
         (void)on_exit;
 
         op->complete(this, result_ec, bytes_transferred);
+        this_thread.rethrow_pending_exception();
         ec = boost::system::error_code();
         return 1;
       }
@@ -513,6 +531,7 @@ size_t win_iocp_io_context::do_one(DWORD msec, boost::system::error_code& ec)
 
 DWORD win_iocp_io_context::get_gqcs_timeout()
 {
+#if !defined(_WIN32_WINNT) || (_WIN32_WINNT < 0x0600)
   OSVERSIONINFOEX osvi;
   ZeroMemory(&osvi, sizeof(osvi));
   osvi.dwOSVersionInfoSize = sizeof(osvi);
@@ -525,6 +544,9 @@ DWORD win_iocp_io_context::get_gqcs_timeout()
     return INFINITE;
 
   return default_gqcs_timeout;
+#else // !defined(_WIN32_WINNT) || (_WIN32_WINNT < 0x0600)
+  return INFINITE;
+#endif // !defined(_WIN32_WINNT) || (_WIN32_WINNT < 0x0600)
 }
 
 void win_iocp_io_context::do_add_timer_queue(timer_queue_base& queue)

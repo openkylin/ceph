@@ -19,7 +19,7 @@ Synopsis
 
 | **cephadm** **pull**
 
-| **cephadm** **inspect-image**
+| **cephadm** --image IMAGE_NAME **inspect-image**
 
 | **cephadm** **ls** [-h] [--no-detail] [--legacy-dir LEGACY_DIR]
 
@@ -53,6 +53,7 @@ Synopsis
 | **cephadm** **bootstrap** [-h] [--config CONFIG] [--mon-id MON_ID]
 |                           [--mon-addrv MON_ADDRV] [--mon-ip MON_IP]
 |                           [--mgr-id MGR_ID] [--fsid FSID]
+|                           [--log-to-file] [--single-host-defaults]
 |                           [--output-dir OUTPUT_DIR]
 |                           [--output-keyring OUTPUT_KEYRING]
 |                           [--output-config OUTPUT_CONFIG]
@@ -126,13 +127,14 @@ Options
 .. option:: --docker
 
    use docker instead of podman (default: False)
-.. option::data-dir DATA_DIR
 
-   base directory for daemon data (default:/var/lib/ceph)
+.. option:: --data-dir DATA_DIR
+
+   base directory for daemon data (default: /var/lib/ceph)
 
 .. option:: --log-dir LOG_DIR
 
-   base directory for daemon logs (default:.. option:: /var/log/ceph)
+   base directory for daemon logs (default: /var/log/ceph)
 
 .. option:: --logrotate-dir LOGROTATE_DIR
 
@@ -192,6 +194,17 @@ Arguments:
 * [--skip-firewalld]           Do not configure firewalld
 * [--skip-pull]                do not pull the latest image before adopting
 
+Configuration:
+
+When starting the shell, cephadm looks for configuration in the following order.
+Only the first values found are used:
+
+1. An explicit, user provided path to a config file (``-c/--config`` option)
+2. Config file for daemon specified with ``--name`` parameter (``/var/lib/ceph/<fsid>/<daemon-name>/config``)
+3. ``/var/lib/ceph/<fsid>/config/ceph.conf`` if it exists
+4. The config file for a ``mon`` daemon (``/var/lib/ceph/<fsid>/mon.<mon-id>/config``) if it exists
+5. Finally: fallback to the default file ``/etc/ceph/ceph.conf``
+
 
 bootstrap
 ---------
@@ -208,6 +221,8 @@ Arguments:
 * [--mon-ip MON_IP]               mon IP
 * [--mgr-id MGR_ID]               mgr id (default: randomly generated)
 * [--fsid FSID]                   cluster FSID
+* [--log-to-file]                 configure cluster to log to traditional log files
+* [--single-host-defaults]        configure cluster to run on a single host
 * [--output-dir OUTPUT_DIR]       directory to write config, keyring, and pub key files
 * [--output-keyring OUTPUT_KEYRING] location to write keyring file with new cluster admin and mon keys
 * [--output-config OUTPUT_CONFIG] location to write conf file to connect to new cluster
@@ -254,7 +269,7 @@ Positional arguments:
 Arguments:
 
 * [--fsid FSID]                    cluster FSID
-* [--config-json CONFIG_JSON]      JSON file with config and (client.bootrap-osd) key
+* [--config-json CONFIG_JSON]      JSON file with config and (client.bootstrap-osd) key
 * [--config CONFIG, -c CONFIG]     ceph conf file
 * [--keyring KEYRING, -k KEYRING]  ceph.keyring to pass through to the container
 
@@ -319,7 +334,10 @@ Positional arguments:
 inspect-image
 -------------
 
-inspect local ceph container image.
+Inspect local Ceph container image. From Reef onward, requires specifying
+the image to inspect with ``--image``::
+
+    cephadm --image IMAGE_NAME inspect-image
 
 list-networks
 -------------

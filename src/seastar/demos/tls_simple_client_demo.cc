@@ -24,6 +24,7 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/sleep.hh>
+#include <seastar/core/loop.hh>
 #include <seastar/net/dns.hh>
 #include "tls_echo_server.hh"
 
@@ -71,7 +72,7 @@ int main(int ac, char** av) {
         if (config.count("msg")) {
             msg = seastar::make_shared<sstring>(config["msg"].as<std::string>());
         } else {
-            msg = seastar::make_shared<sstring>(sstring(sstring::initialized_later(), n));
+            msg = seastar::make_shared<sstring>(uninitialized_string(n));
             for (size_t i = 0; i < n; ++i) {
                 (*msg)[i] = '0' + char(::rand() % 30);
             }
@@ -88,11 +89,11 @@ int main(int ac, char** av) {
             return net::dns::get_host_by_name(addr).then([=](net::hostent e) {
                 ipv4_addr ia(e.addr_list.front(), port);
 
-                sstring name;
+                tls::tls_options options;
                 if (check) {
-                    name = server_name.empty() ? e.names.front() : server_name;
+                    options.server_name = server_name.empty() ? e.names.front() : server_name;
                 }
-                return tls::connect(certs, ia, name).then([=](::connected_socket s) {
+                return tls::connect(certs, ia, options).then([=](::connected_socket s) {
                     auto strms = ::make_lw_shared<streams>(std::move(s));
                     auto range = boost::irange(size_t(0), i);
                     return do_for_each(range, [=](auto) {

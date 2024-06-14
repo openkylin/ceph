@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# -*- mode:sh; tab-width:4; sh-basic-offset:4; indent-tabs-mode:nil -*-
+# vim: softtabstop=4 shiftwidth=4 expandtab
 #
 # Copyright (C) 2013 Inktank <info@inktank.com>
 # Copyright (C) 2013 Cloudwatt <libre.licensing@cloudwatt.com>
@@ -28,7 +30,10 @@ else
   CEPH_CONF_PATH="$PWD"
 fi
 conf_fn="$CEPH_CONF_PATH/ceph.conf"
-CEPHADM_DIR_PATH="$CEPH_CONF_PATH/../src/cephadm"
+
+if [ -z "$CEPHADM" ]; then
+  CEPHADM="${CEPH_BIN}/cephadm"
+fi
 
 MYUID=$(id -u)
 MYNAME=$(id -nu)
@@ -43,9 +48,39 @@ do_killall() {
     $SUDO killall -u $MYNAME $1
 }
 
+maybe_kill() {
+    local p=$1
+    shift
+    local step=$1
+    shift
+    case $step in
+        0)
+            # killing processes
+            pkill -SIGTERM -u $MYUID $p
+            return 1
+            ;;
+        [1-5])
+            # wait for processes to stop
+            if pkill -0 -u $MYUID $p; then
+                # $p is still alive
+                return 1
+            fi
+            ;;
+        8)
+            # kill and print if some left
+            if pkill -0 -u $MYUID $p; then
+                echo "WARNING: $p did not orderly shutdown, killing it hard!" >&2
+                pkill -SIGKILL -u $MYUID $p
+            fi
+            ;;
+    esac
+}
+
 do_killcephadm() {
-    FSID=$($CEPH_BIN/ceph -c $conf_fn fsid)
-    sudo $CEPHADM_DIR_PATH/cephadm rm-cluster --fsid $FSID --force
+    local FSID=$($CEPH_BIN/ceph -c $conf_fn fsid)
+    if [ -n "$FSID" ]; then
+        sudo $CEPHADM rm-cluster --fsid $FSID --force
+    fi
 }
 
 do_umountall() {
@@ -74,8 +109,11 @@ do_umountall() {
     done
 
     #Get fuse mounts of the cluster
-    CEPH_FUSE_MNTS=$("${CEPH_BIN}"/ceph -c $conf_fn tell mds.* client ls 2>/dev/null | grep mount_point | tr -d '",' | awk '{print $2}')
-    [ -n "$CEPH_FUSE_MNTS" ] && sudo umount -f $CEPH_FUSE_MNTS
+    num_of_ceph_mdss=$(ps -e | grep \ ceph-mds$ | wc -l)
+    if test $num_of_ceph_mdss -ne 0; then
+        CEPH_FUSE_MNTS=$("${CEPH_BIN}"/ceph -c $conf_fn tell mds.* client ls 2>/dev/null | grep mount_point | tr -d '",' | awk '{print $2}')
+        [ -n "$CEPH_FUSE_MNTS" ] && sudo umount -f $CEPH_FUSE_MNTS
+    fi
 }
 
 usage="usage: $0 [all] [mon] [mds] [osd] [rgw] [nfs] [--crimson] [--cephadm]\n"
@@ -156,18 +194,30 @@ if [ $stop_all -eq 1 ]; then
         fi
     fi
 
-    daemons="$($CEPHADM_DIR_PATH/cephadm ls 2> /dev/null)"
+    daemons="$(sudo $CEPHADM ls 2> /dev/null)"
     if [ $? -eq 0 -a "$daemons" != "[]" ]; then
         do_killcephadm
     fi
 
-    for p in ceph-mon ceph-mds $ceph_osd ceph-mgr radosgw lt-radosgw apache2 ganesha.nfsd ; do
-        for try in 0 1 1 1 1 ; do
-            if ! pkill -u $MYUID $p ; then
-                break
+    # killing processes
+    to_kill="$ceph_osd ceph-mon ceph-mds ceph-mgr radosgw lt-radosgw apache2 ganesha.nfsd cephfs-top cephfs-mirror rbd-mirror"
+    since_kill=0
+    for step in 0 1 1 2 3 5 8; do
+        sleep $step
+        since_kill=$((since_kill + step))
+        survivors=''
+        for p in $to_kill; do
+            if ! maybe_kill "$p" $step; then
+                survivors+=" $p"
             fi
-            sleep $try
         done
+        if [ -z "$survivors" ]; then
+            break
+        fi
+        to_kill=$survivors
+        if [ $since_kill -gt 0 ]; then
+            echo "WARNING: $to_kill still alive after $since_kill seconds" >&2
+        fi
     done
 
     pkill -u $MYUID -f valgrind.bin.\*ceph-mon

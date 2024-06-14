@@ -22,8 +22,8 @@
 
 #include <chrono>
 #include <seastar/net/api.hh>
+#include <seastar/core/internal/api-level.hh>
 #include <seastar/core/memory.hh>
-#include "../core/internal/api-level.hh"
 
 namespace seastar {
 
@@ -34,6 +34,7 @@ class connected_socket_impl {
 public:
     virtual ~connected_socket_impl() {}
     virtual data_source source() = 0;
+    virtual data_source source(connected_socket_input_stream_config csisc);
     virtual data_sink sink() = 0;
     virtual void shutdown_input() = 0;
     virtual void shutdown_output() = 0;
@@ -43,10 +44,18 @@ public:
     virtual bool get_keepalive() const = 0;
     virtual void set_keepalive_parameters(const keepalive_params&) = 0;
     virtual keepalive_params get_keepalive_parameters() const = 0;
+    virtual void set_sockopt(int level, int optname, const void* data, size_t len) = 0;
+    virtual int get_sockopt(int level, int optname, void* data, size_t len) const = 0;
+    virtual socket_address local_address() const noexcept = 0;
+    virtual socket_address remote_address() const noexcept = 0;
+    virtual future<> wait_input_shutdown() = 0;
 };
 
 class socket_impl {
 public:
+    socket_impl() = default;
+    socket_impl(const socket_impl&) = delete;
+    socket_impl(socket_impl&&) = default;
     virtual ~socket_impl() {}
     virtual future<connected_socket> connect(socket_address sa, socket_address local, transport proto = transport::TCP) = 0;
     virtual void set_reuseaddr(bool reuseaddr) = 0;
@@ -54,8 +63,6 @@ public:
     virtual void shutdown() = 0;
 };
 
-
-SEASTAR_INCLUDE_API_V2 namespace api_v2 {
 
 class server_socket_impl {
 public:
@@ -65,29 +72,11 @@ public:
     virtual socket_address local_address() const = 0;
 };
 
-}
-
-#if SEASTAR_API_LEVEL <= 1
-
-SEASTAR_INCLUDE_API_V1 namespace api_v1 {
-
-class server_socket_impl {
+class datagram_channel_impl {
 public:
-    virtual ~server_socket_impl() {}
-    virtual future<connected_socket, socket_address> accept() = 0;
-    virtual void abort_accept() = 0;
+    virtual ~datagram_channel_impl() {}
     virtual socket_address local_address() const = 0;
-};
-
-}
-
-#endif
-
-class udp_channel_impl {
-public:
-    virtual ~udp_channel_impl() {}
-    virtual socket_address local_address() const = 0;
-    virtual future<udp_datagram> receive() = 0;
+    virtual future<datagram> receive() = 0;
     virtual future<> send(const socket_address& dst, const char* msg) = 0;
     virtual future<> send(const socket_address& dst, packet p) = 0;
     virtual void shutdown_input() = 0;
@@ -96,9 +85,14 @@ public:
     virtual void close() = 0;
 };
 
+using udp_channel_impl = datagram_channel_impl;
+
 class network_interface_impl {
-public:
+protected:
+    network_interface_impl() = default;
+    network_interface_impl(const network_interface_impl&) = default;
     virtual ~network_interface_impl() {}
+public:
     virtual uint32_t index() const = 0;
     virtual uint32_t mtu() const = 0;
 

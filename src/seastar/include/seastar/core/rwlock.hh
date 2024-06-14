@@ -21,17 +21,23 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
+#include <cstddef>
+#endif
 #include <seastar/core/semaphore.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
 /// \cond internal
 // lock / unlock semantics for rwlock, so it can be used with with_lock()
+SEASTAR_MODULE_EXPORT
 template<typename Clock>
 class basic_rwlock;
 
 template<typename Clock = typename timer<>::clock>
-struct rwlock_for_read {
+class rwlock_for_read {
+public:
     future<> lock() {
         return static_cast<basic_rwlock<Clock>*>(this)->read_lock();
     }
@@ -42,7 +48,8 @@ struct rwlock_for_read {
 };
 
 template<typename Clock = typename timer<>::clock>
-struct rwlock_for_write {
+class rwlock_for_write {
+public:
     future<> lock() {
         return static_cast<basic_rwlock<Clock>*>(this)->write_lock();
     }
@@ -63,6 +70,7 @@ struct rwlock_for_write {
 /// fibers running in the same CPU that may use the same resource.
 /// Acquiring the write lock will effectively cause all readers not to be executed
 /// until the write part is done.
+SEASTAR_MODULE_EXPORT
 template<typename Clock = typename timer<>::clock>
 class basic_rwlock : private rwlock_for_read<Clock>, rwlock_for_write<Clock> {
     using semaphore_type = basic_semaphore<semaphore_default_exception_factory, Clock>;
@@ -96,13 +104,15 @@ public:
         return _sem.wait(timeout);
     }
 
+    future<> read_lock(abort_source& as) {
+        return _sem.wait(as);
+    }
+
     /// Releases the lock, which must have been taken in read mode. After this
     /// is called, one of the fibers waiting on \ref write_lock will be allowed
     /// to proceed.
     void read_unlock() {
-#ifdef SEASTAR_DEBUG_LOCKING
         assert(_sem.current() < max_ops);
-#endif
         _sem.signal();
     }
 
@@ -114,13 +124,15 @@ public:
         return _sem.wait(timeout, max_ops);
     }
 
+    future<> write_lock(abort_source& as) {
+        return _sem.wait(as, max_ops);
+    }
+
     /// Releases the lock, which must have been taken in write mode. After this
     /// is called, one of the other fibers waiting on \ref write_lock or the fibers
     /// waiting on \ref read_lock will be allowed to proceed.
     void write_unlock() {
-#ifdef SEASTAR_DEBUG_LOCKING
         assert(_sem.current() == 0);
-#endif
         _sem.signal(max_ops);
     }
 
@@ -148,7 +160,11 @@ public:
     /// return an exceptional future) when it failed to obtain the lock -
     /// e.g., on allocation failure.
     future<holder> hold_read_lock(typename semaphore_type::time_point timeout = semaphore_type::time_point::max()) {
-        return get_units(_sem, 1);
+        return get_units(_sem, 1, timeout);
+    }
+
+    future<holder> hold_read_lock(abort_source& as) {
+        return get_units(_sem, 1, as);
     }
 
     /// hold_write_lock() waits for a write lock and returns an object which,
@@ -163,7 +179,11 @@ public:
     /// return an exceptional future) when it failed to obtain the lock -
     /// e.g., on allocation failure.
     future<holder> hold_write_lock(typename semaphore_type::time_point timeout = semaphore_type::time_point::max()) {
-        return get_units(_sem, max_ops);
+        return get_units(_sem, max_ops, timeout);
+    }
+
+    future<holder> hold_write_lock(abort_source& as) {
+        return get_units(_sem, max_ops, as);
     }
 
     /// Checks if any read or write locks are currently held.
@@ -175,6 +195,7 @@ public:
     friend class rwlock_for_write<Clock>;
 };
 
+SEASTAR_MODULE_EXPORT
 using rwlock = basic_rwlock<>;
 
 /// @}

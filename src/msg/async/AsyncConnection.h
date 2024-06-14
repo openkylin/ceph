@@ -56,7 +56,7 @@ class AsyncConnection : public Connection {
   ssize_t read_until(unsigned needed, char *p);
   ssize_t read_bulk(char *buf, unsigned len);
 
-  ssize_t write(bufferlist &bl, std::function<void(ssize_t)> callback,
+  ssize_t write(ceph::buffer::list &bl, std::function<void(ssize_t)> callback,
                 bool more=false);
   ssize_t _try_send(bool more=false);
 
@@ -64,6 +64,7 @@ class AsyncConnection : public Connection {
   void _stop();
   void fault();
   void inject_delay();
+  bool inject_network_congestion() const;
 
   bool is_queued() const;
   void shutdown_socket();
@@ -114,7 +115,7 @@ private:
 public:
   void maybe_start_delay_thread();
 
-  ostream& _conn_prefix(std::ostream *_dout);
+  std::ostream& _conn_prefix(std::ostream *_dout);
 
   bool is_connected() override;
 
@@ -172,6 +173,7 @@ public:
   AsyncMessenger *async_msgr;
   uint64_t conn_id;
   PerfCounters *logger;
+  PerfCounters *labeled_logger;
   int state;
   ConnectedSocket cs;
   int port;
@@ -182,7 +184,7 @@ private:
   DispatchQueue *dispatch_queue;
 
   // lockfree, only used in own thread
-  bufferlist outgoing_bl;
+  ceph::buffer::list outgoing_bl;
   bool open_write = false;
 
   std::mutex write_lock;
@@ -197,7 +199,7 @@ private:
   uint32_t recv_max_prefetch;
   uint32_t recv_start;
   uint32_t recv_end;
-  set<uint64_t> register_time_events; // need to delete it if stop
+  std::set<uint64_t> register_time_events; // need to delete it if stop
   ceph::coarse_mono_clock::time_point last_connect_started;
   ceph::coarse_mono_clock::time_point last_active;
   ceph::mono_clock::time_point recv_start_time;
@@ -233,7 +235,6 @@ private:
   void process();
   void wakeup_from(uint64_t id);
   void tick(uint64_t id);
-  void local_deliver();
   void stop(bool queue_reset);
   void cleanup();
   PerfCounters *get_perf_counter() {

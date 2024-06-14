@@ -20,6 +20,7 @@ import string
 import subprocess
 import sys
 import time
+from typing import List, Dict
 
 #
 # Accepted Environment variables:
@@ -64,9 +65,9 @@ OPS = {
     'dump': ['existing', 'enoent'],
 }
 
-CONFIG_PUT = []  # list: keys
-CONFIG_DEL = []  # list: keys
-CONFIG_EXISTING = {}  # map: key -> size
+CONFIG_PUT: List[str] = []  # list: keys
+CONFIG_DEL: List[str] = []  # list: keys
+CONFIG_EXISTING: Dict[str, int] = {}  # map: key -> size
 
 
 def run_cmd(cmd, expects=0):
@@ -424,7 +425,8 @@ def main():
                 read_data = json.load(temp_file)
             except ValueError:
                 temp_file.seek(0)
-                assert False, "{op} output was not valid JSON:\n{filedata}".format(op, temp_file.readlines())
+                assert False, "{op} output was not valid JSON:\n{filedata}".format(
+                    op=op, filedata=temp_file.readlines())
 
             if sop == 'existing':
                 assert key in read_data, "key '{k}' not found in list/dump output".format(k=key)

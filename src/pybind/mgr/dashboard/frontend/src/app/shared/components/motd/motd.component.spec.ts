@@ -1,9 +1,9 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../../testing/unit-test-helper';
-import { DashboardModule } from '../../../ceph/dashboard/dashboard.module';
-import { SharedModule } from '../../../shared/shared.module';
+import { DashboardModule } from '~/app/ceph/dashboard/dashboard.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { MotdComponent } from './motd.component';
 
 describe('MotdComponent', () => {

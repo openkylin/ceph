@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 try:
-    from typing import Dict, Any
+    from typing import Any, Dict
 except ImportError:
     pass
 

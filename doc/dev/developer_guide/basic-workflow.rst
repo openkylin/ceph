@@ -1,21 +1,23 @@
+.. _basic workflow dev guide:
+
 Basic Workflow
 ==============
 
-The following chart illustrates basic development workflow:
+The following chart illustrates the basic Ceph development workflow:
 
 .. ditaa::
 
             Upstream Code                       Your Local Environment
 
            /----------\        git clone           /-------------\
-           |   Ceph   | -------------------------> | ceph/master |
+           |   Ceph   | -------------------------> | ceph/main   |
            \----------/                            \-------------/
                 ^                                    |
                 |                                    | git branch fix_1
                 | git merge                          |
                 |                                    v
            /----------------\  git commit --amend   /-------------\
-           |  make check    |---------------------> | ceph/fix_1  |
+           | ninja check    |---------------------> | ceph/fix_1  |
            | ceph--qa--suite|                       \-------------/
            \----------------/                        |
                 ^                                    | fix changes
@@ -33,16 +35,15 @@ an enhancement, but you do not know how to proceed. Watch the `Getting Started
 with Ceph Development <https://www.youtube.com/watch?v=t5UIehZ1oLs>`_ video for
 a practical summary of this workflow.
 
-Update the tracker
-------------------
+Updating the tracker
+--------------------
 
-Find the `Redmine issue tracker <https://tracker.ceph.com>`_ number of
-the bug you intend to fix. If no tracker issue exists, create one. There is
-only one case in which you do not have to create a Redmine tracker issue: the
-case of minor documentation changes.
+Find the :ref:`issue-tracker` (Redmine) number of the bug you intend to fix. If
+no tracker issue exists, create one. There is only one case in which you do not
+have to create a Redmine tracker issue: the case of minor documentation changes.
 
 Simple documentation cleanup does not require a corresponding tracker issue.
-Major documenatation changes do require a tracker issue. Major documentation
+Major documentation changes do require a tracker issue. Major documentation
 changes include adding new documentation chapters or files, and making 
 substantial changes to the structure or content of the documentation.
 
@@ -77,7 +78,7 @@ The procedure for making changes to the Ceph repository is as follows:
 
 #. Fix the bug
 
-   #. :ref:`Synchronize local master with upstream master<synchronizing>`.
+   #. :ref:`Synchronize local main with upstream main<synchronizing>`.
          
    #. :ref:`Create a bugfix branch<bugfix_branch>` in your local working copy.
          
@@ -86,7 +87,7 @@ The procedure for making changes to the Ceph repository is as follows:
    
    #. :ref:`Push the changes in your local working copy to your fork<push_changes>`.
 
-#. Create a Pull Request to push the change upstream
+#. Create a Pull Request to push the change upstream.
 
    #. Create a Pull Request that asks for your changes to be added into the
       "upstream Ceph" repository.
@@ -117,9 +118,9 @@ Cloning Your Fork
 
 After you have created your fork, clone it by running the following command:
 
-.. code::
+.. prompt:: bash $
 
-    $ git clone https://github.com/mygithubaccount/ceph
+   git clone https://github.com/mygithubaccount/ceph
 
 You must fork the Ceph repository before you clone it.  If you fail to fork,
 you cannot open a `GitHub pull request
@@ -132,8 +133,8 @@ Configuring Your Local Environment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The commands in this section configure your local git environment so that it
-generates "Signed-off-by:" tags. They also set up your local environment so
-that it can stay synchronized with the upstream repository.
+generates "Signed-off-by:" tags. These commands also set up your local
+environment so that it can stay synchronized with the upstream repository.
 
 These commands are necessary only during the initial setup of your local
 working copy. Another way to say that is "These commands are necessary
@@ -142,6 +143,10 @@ however, unavoidable, and if you fail to run them then you will not be able
 to work on the Ceph repository.".
 
 1. Configure your local git environment with your name and email address.  
+
+   .. note::
+      These commands will work only from within the ``ceph/`` directory
+      that was created when you cloned your fork.
 
    .. prompt:: bash $
 
@@ -164,58 +169,60 @@ Fixing the Bug
 
 .. _synchronizing:
 
-Synchronizing Local Master with Upstream Master
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Synchronizing Local Main with Upstream Main
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In your local git environment, there is a copy of the ``master`` branch in
-``remotes/origin/master``. This is called "local master". This copy of the
-master branch (https://github.com/your_github_id/ceph.git) is "frozen in time"
+In your local working copy, there is a copy of the ``main`` branch in
+``remotes/origin/main``. This is called "local main". This copy of the
+main branch (https://github.com/your_github_id/ceph.git) is "frozen in time"
 at the moment that you cloned it, but the upstream repo
 (https://github.com/ceph/ceph.git, typically abbreviated to ``ceph/ceph.git``)
 that it was forked from is not frozen in time: the upstream repo is still being
 updated by other contributors. 
 
-Because upstream master is continually receiving updates from other
+Because upstream main is continually receiving updates from other
 contributors, your fork will drift farther and farther from the state of the
 upstream repo when you cloned it.
 
-You must keep your fork's master branch synchronized with upstream master in
-order to reduce drift between your fork's master branch and the upstream master
-branch.
+Keep your fork's ``main`` branch synchronized with upstream main to reduce drift
+between your fork's main branch and the upstream main branch.
 
 Here are the commands for keeping your fork synchronized with the
 upstream repository:
 
-    $ git push -u origin master
+.. prompt:: bash $
 
-Bugfix branch
--------------
+   git fetch ceph
+   git checkout main 
+   git reset --hard ceph/main
+   git push -u origin main
 
-Next, create a branch for the bugfix:
+Follow this procedure often to keep your local ``main`` in sync with upstream
+``main``.
+
+If the command ``git status`` returns a line that reads "Untracked files", see
+:ref:`the procedure on updating submodules <update-submodules>`.
 
 .. _bugfix_branch:
 
 Creating a Bugfix branch
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-    $ git checkout master
-    $ git checkout -b fix_1
-    $ git push -u origin fix_1
+Create a branch for your bugfix:
 
-This creates a ``fix_1`` branch locally and in our GitHub fork. At this
-point, the ``fix_1`` branch is identical to the ``master`` branch, but not
-for long! You are now ready to modify the code.
+.. prompt:: bash $
 
-Fix bug locally
----------------
+   git checkout main 
+   git checkout -b fix_1
+   git push -u origin fix_1
 
-The first command (git checkout master) makes sure that the bugfix branch
-"fix_1" is created from the most recent state of the master branch of the
+The first command (git checkout main) makes sure that the bugfix branch
+"fix_1" is created from the most recent state of the main branch of the
 upstream repository. 
 
 The second command (git checkout -b fix_1) creates a "bugfix branch" called
 "fix_1" in your local working copy of the repository. The changes that you make
-in order to fix the bug will be commited to this branch.
+in order to fix the bug will be committed to this branch.
 
 The third command (git push -u origin fix_1) pushes the bugfix branch from
 your local working repository to your fork of the upstream repository.
@@ -225,15 +232,15 @@ your local working repository to your fork of the upstream repository.
 Fixing the bug in the local working copy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-#. Updating the tracker 
+#. **Updating the tracker**
 
    In the `Ceph issue tracker <https://tracker.ceph.com>`_, change the status
    of the tracker issue to "In progress".  This communicates to other Ceph
    contributors that you have begun working on a fix, which helps to avoid
    duplication of effort. If you don't have permission to change that field,
-   your comment that you are working on the issue is sufficient.
+   just comment that you are working on the issue. 
 
-#. Fixing the bug itself
+#. **Fixing the bug itself**
 
    This guide cannot tell you how to fix the bug that you have chosen to fix.
    This guide assumes that you know what required improvement, and that you
@@ -275,13 +282,13 @@ believe that it works.
    
    .. note::
 
-      In the command `git push origin fix_1`, `origin` is the name of your fork
-      of the upstream Ceph repository, and can be thought of as a nickname for
-      `git@github.com:username/ceph.git`, where `username` is your GitHub
-      username.
+      In the command ``git push origin fix_1``, ``origin`` is the name of your
+      fork of the upstream Ceph repository, and can be thought of as a nickname
+      for ``git@github.com:username/ceph.git``, where ``username`` is your
+      GitHub username.
 
-      It is possible that `origin` is not the name of your fork. Discover the
-      name of your fork by running `git remote -v`, as shown here:
+      It is possible that ``origin`` is not the name of your fork. Discover the
+      name of your fork by running ``git remote -v``, as shown here:
 
       .. code-block:: bash
 
@@ -291,13 +298,20 @@ believe that it works.
          origin	git@github.com:username/ceph.git (fetch)
          origin	git@github.com:username/ceph.git (push)
 
-       The line "origin git@github.com:username/ceph.git (fetch)" and the line
-       "origin git@github.com:username/ceph.git (push)" provide the information
-       that "origin" is the name of your fork of the Ceph repository.
+      The line::
+     
+         origin git@github.com:username/ceph.git (fetch) 
+      
+      and the line:: 
+        
+         origin git@github.com:username/ceph.git (push) 
+         
+      provide the information that "origin" is the name of your fork of the
+      Ceph repository.
 
-The next step is to open a GitHub pull request. The purpose of this step is
-to make your bugfix available to the community of Ceph developers.  They
-will review it and may do additional testing on it.
+
+Opening a GitHub pull request
+-----------------------------
 
 After you have pushed the bugfix to your fork, open a GitHub pull request
 (PR). This makes your bugfix visible to the community of Ceph contributors.
@@ -320,23 +334,23 @@ the `Git Commit Good Practice`_ article at the `OpenStack Project Wiki`_.
 .. _`OpenStack Project Wiki`: https://wiki.openstack.org/wiki/Main_Page
 
 See also our own `Submitting Patches
-<https://github.com/ceph/ceph/blob/master/SubmittingPatches.rst>`_ document.
+<https://github.com/ceph/ceph/blob/main/SubmittingPatches.rst>`_ document.
 
-After your pull request (PR) has been opened, update the `issue tracker
-<https://tracker.ceph.com>`_ by adding a comment directing other contributors
-to your PR. The comment can be as simple as this::
+After your pull request (PR) has been opened, update the :ref:`issue-tracker`
+by adding a comment directing other contributors to your PR. The comment can be
+as simple as this::
 
     *PR*: https://github.com/ceph/ceph/pull/$NUMBER_OF_YOUR_PULL_REQUEST
 
-Automated PR validation
------------------------
+Understanding Automated PR validation
+-------------------------------------
 
 When you create or update your PR, the Ceph project's `Continuous Integration
 (CI) <https://en.wikipedia.org/wiki/Continuous_integration>`_ infrastructure
 automatically tests it. At the time of this writing (May 2022), the automated
 CI testing included many tests. These five are among them:
 
-#. a test to check that the commits are properly signed (see `Submitting Patches <https://github.com/ceph/ceph/blob/master/SubmittingPatches.rst>`_):
+#. a test to check that the commits are properly signed (see :ref:`submitting-patches`):
 #. a test to check that the documentation builds
 #. a test to check that the submodules are unmodified
 #. a test to check that the API is in order
@@ -384,34 +398,39 @@ determine the cause of your specific failure.
 Integration tests AKA ceph-qa-suite
 -----------------------------------
 
-Since Ceph is a complex beast, it may also be necessary to test your fix to
-see how it behaves on real clusters running either on real or virtual
-hardware. Tests designed for this purpose live in the `ceph/qa
+It may be necessary to test your fix on real Ceph clusters that run on physical
+or virtual hardware. Tests designed for this purpose live in the `ceph/qa
 sub-directory`_ and are run via the `teuthology framework`_.
 
-.. _`ceph/qa sub-directory`: https://github.com/ceph/ceph/tree/master/qa/
+.. _`ceph/qa sub-directory`: https://github.com/ceph/ceph/tree/main/qa/
 .. _`teuthology repository`: https://github.com/ceph/teuthology
 .. _`teuthology framework`: https://github.com/ceph/teuthology
 
 The Ceph community has access to the `Sepia lab
-<https://wiki.sepia.ceph.com/doku.php>`_ where :ref:`integration
-tests<integration-tests>` can be run on real hardware. Other developers may add
-tags like "needs-qa" to your PR. This allows PRs that need testing to be merged
-into a single branch and tested all at the same time. Since teuthology suites
-can take hours (even days in some cases) to run, this can save a lot of time.
+<https://wiki.sepia.ceph.com/doku.php>`_ where `integration tests`_ can be run
+on physical hardware.
 
-To request access to the Sepia lab, start `here <https://wiki.sepia.ceph.com/doku.php?id=vpnaccess>`_.
+Other contributors might add tags like `needs-qa` to your PR. This allows PRs
+to be merged into a single branch and then efficiently tested together.
+Teuthology test suites can take hours (and even days in some cases) to
+complete, so batching tests reduces contention for resources and saves a lot of
+time.
 
-Integration testing is discussed in more detail in the :ref:`integration
-tests<integration-tests>` chapter.
+To request access to the Sepia lab, start `here
+<https://wiki.sepia.ceph.com/doku.php?id=vpnaccess>`_.
+
+Integration testing is discussed in more detail in the `integration
+tests`_ chapter.
+
+.. _integration tests: ../testing_integration_tests/tests-integration-testing-teuthology-intro
 
 Code review
 -----------
 
 Once your bugfix has been thoroughly tested, or even during this process,
 it will be subjected to code review by other developers. This typically
-takes the form of correspondence in the PR itself, but can be supplemented
-by discussions on :ref:`IRC<irc>` and the :ref:`mailing-list-subscribe`.
+takes the form of comments in the PR itself, but can be supplemented
+by discussions on :ref:`irc` and the :ref:`mailing-list`.
 
 Amending your PR
 ----------------
@@ -419,7 +438,7 @@ Amending your PR
 While your PR is going through testing and `Code Review`_, you can
 modify it at any time by editing files in your local branch.
 
-After the changes are committed locally (to the ``fix_1`` branch in our
+After updates are committed locally (to the ``fix_1`` branch in our
 example), they need to be pushed to GitHub so they appear in the PR.
 
 Modifying the PR is done by adding commits to the ``fix_1`` branch upon
@@ -429,19 +448,140 @@ history. See `this tutorial
 introduction to rebasing. When you are done with your modifications, you
 will need to force push your branch with:
 
-.. code::
+.. prompt:: bash $
 
-    $ git push --force origin fix_1
+   git push --force origin fix_1
 
-Merge
------
+Why do we take these extra steps instead of simply adding additional commits
+the PR?  It is best practice for a PR to consist of a single commit; this
+makes for clean history, eases peer review of your changes, and facilitates
+merges.  In rare circumstances it also makes it easier to cleanly revert
+changes.
 
-The bugfixing process culminates when one of the project leads decides to
-merge your PR.
+Merging
+-------
 
-When this happens, it is a signal for you (or the lead who merged the PR) to
-change the `Ceph issue tracker <https://tracker.ceph.com>`_ status to
-"Resolved". Some issues may be flagged for backporting, in which case the
-status should be changed to "Pending Backport" (see the
-:ref:`Backporting<backporting>` chapter for details).
+The bugfix process completes when a project lead merges your PR.
 
+When this happens, it is a signal for you (or the lead who merged the PR)
+to change the :ref:`issue-tracker` status to "Resolved". Some issues may be
+flagged for backporting, in which case the status should be changed to
+"Pending Backport" (see the :ref:`backporting` chapter for details).
+
+See also :ref:`merging` for more information on merging.
+
+Proper Merge Commit Format
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This is the most basic form of a merge commit::
+
+       doc/component: title of the commit 
+
+       Reviewed-by: Reviewer Name <rname@example.com>
+
+This consists of two parts:
+
+#. The title of the commit / PR to be merged.
+#. The name and email address of the reviewer. Enclose the reviewer's email 
+   address in angle brackets.
+
+Using a browser extension to auto-fill the merge  message
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you use a browser for merging GitHub PRs, the easiest way to fill in
+the merge message is with the `"Ceph GitHub Helper Extension"
+<https://github.com/tspmelo/ceph-github-helper>`_ (available for `Chrome
+<https://chrome.google.com/webstore/detail/ceph-github-helper/ikpfebikkeabmdnccbimlomheocpgkmn>`_
+and `Firefox <https://addons.mozilla.org/en-US/firefox/addon/ceph-github-helper/>`_).
+
+After enabling this extension, if you go to a GitHub PR page, a vertical helper
+will be displayed at the top-right corner. If you click on the user silhouette button
+the merge message input will be automatically populated.
+
+Using .githubmap to Find a Reviewer's Email Address
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+If you cannot find the email address of the reviewer on his or her GitHub
+page, you can look it up in the **.githubmap** file, which can be found in
+the repository at **/ceph/.githubmap**.
+
+Using "git log" to find a Reviewer's Email Address
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+If you cannot find a reviewer's email address by using the above methods, you
+can search the git log for their email address. Reviewers are likely to have
+committed something before.  If they have made previous contributions, the git
+log will probably contain their email address.
+
+Use the following command
+
+.. prompt:: bash [branch-under-review]$
+
+   git log
+
+Using ptl-tool to Generate Merge Commits
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Another method of generating merge commits involves using Patrick Donnelly's
+**ptl-tool** pull commits. This tool can be found at
+**/ceph/src/script/ptl-tool.py**.  Merge commits that have been generated by
+the **ptl-tool** have the following form::
+
+     Merge PR #36257 into main 
+     * refs/pull/36257/head:
+             client: move client_lock to _unmount()
+             client: add timer_lock support
+     Reviewed-by: Patrick Donnelly <pdonnell@redhat.com>
+
+Miscellaneous
+-------------
+
+--set-upstream
+^^^^^^^^^^^^^^
+
+If you forget to include the ``--set-upstream origin x`` option in your ``git
+push`` command, you will see the following error message:
+
+::
+
+   fatal: The current branch {x} has no upstream branch.
+   To push the current branch and set the remote as upstream, use
+      git push --set-upstream origin {x}
+
+To set up git to automatically create the upstream branch that corresponds to
+the branch in your local working copy, run this command from within the
+``ceph/`` directory:
+
+.. prompt:: bash $
+
+   git config --global push.autoSetupRemote true
+
+Deleting a Branch Locally
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To delete the branch named ``localBranchName`` from the local working copy, run
+a command of this form:
+
+.. prompt:: bash $
+
+   git branch -d localBranchName
+
+Deleting a Branch Remotely
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To delete the branch named ``remoteBranchName`` from the remote upstream branch
+(which is also your fork of ``ceph/ceph``, as described in :ref:`forking`), run
+a command of this form:
+
+.. prompt:: bash $
+
+   git push origin --delete remoteBranchName
+
+Searching a File Longitudinally for a String
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To search for the commit that introduced a given string (in this example, that
+string is ``foo``) into a given file (in this example, that file is
+``file.rst``), run a command of this form:
+
+.. prompt:: bash $
+
+   git log -S 'foo' file.rst

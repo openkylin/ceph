@@ -170,14 +170,14 @@ int main(int ac, char** av) {
     std::default_random_engine random_engine(seed);
     std::exponential_distribution<> distr(0.2);
     std::uniform_int_distribution<> type(0, 1);
-    std::uniform_int_distribution<char> poison(-128, 127);
+    std::uniform_int_distribution<int> poison(-128, 127);
     std::uniform_real_distribution<> which(0, 1);
     std::vector<allocation> allocations;
     auto iteration = [&] {
         auto typ = type(random_engine);
         switch (typ) {
         case 0: {
-            auto n = std::min<size_t>(std::exp(distr(random_engine)), 1 << 25);
+            size_t n = std::min<double>(std::exp(distr(random_engine)), 1 << 25);
             try {
                 allocations.emplace_back(n, poison(random_engine));
             } catch (std::bad_alloc&) {

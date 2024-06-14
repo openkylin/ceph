@@ -19,8 +19,18 @@
  * Copyright (C) 2018 ScyllaDB
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <boost/range/irange.hpp>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/sharded.hh>
-#include <boost/iterator/counting_iterator.hpp>
+#include <seastar/core/loop.hh>
+#endif
 
 namespace seastar {
 
@@ -28,7 +38,7 @@ namespace internal {
 
 
 future<>
-sharded_parallel_for_each(unsigned nr_shards, on_each_shard_func on_each_shard) {
+sharded_parallel_for_each(unsigned nr_shards, on_each_shard_func on_each_shard) noexcept(std::is_nothrow_move_constructible_v<on_each_shard_func>) {
     return parallel_for_each(boost::irange<unsigned>(0, nr_shards), std::move(on_each_shard));
 }
 

@@ -35,11 +35,11 @@ protected:
   FSMap &create_pending() {
     ceph_assert(is_leader());
     pending_fsmap = fsmap;
-    pending_fsmap.epoch++;
+    pending_fsmap.inc_epoch();
     return pending_fsmap;
   }
 
-  void decode(bufferlist &bl) {
+  void decode(ceph::buffer::list &bl) {
     fsmap.decode(bl);
     pending_fsmap = FSMap(); /* nuke it to catch invalid access */
   }

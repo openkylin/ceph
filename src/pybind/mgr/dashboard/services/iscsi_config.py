@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import json
 
@@ -55,10 +54,10 @@ class IscsiGatewaysConfig(object):
         If Ceph Dashboard were configured before v10, we try to update our internal gateways
         database automatically.
         """
-        for gateway_name, gateway_config in config['gateways'].items():
+        for gateway_name, gateway_config in list(config['gateways'].items()):
             if '.' not in gateway_name:
-                from .iscsi_client import IscsiClient  # pylint: disable=cyclic-import
                 from ..rest_client import RequestException
+                from .iscsi_client import IscsiClient  # pylint: disable=cyclic-import
                 try:
                     service_url = gateway_config['service_url']
                     new_gateway_name = IscsiClient.instance(
@@ -68,7 +67,7 @@ class IscsiGatewaysConfig(object):
                         del config['gateways'][gateway_name]
                         cls._save_config(config)
                 except RequestException:
-                    # If gateway is not acessible, it should be removed manually
+                    # If gateway is not accessible, it should be removed manually
                     # or we will try to update automatically next time
                     continue
 

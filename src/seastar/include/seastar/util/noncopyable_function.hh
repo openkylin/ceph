@@ -21,11 +21,15 @@
 
 #pragma once
 
+#include <seastar/util/modules.hh>
 #include <seastar/util/used_size.hh>
+#include <seastar/util/concepts.hh>
 
+#ifndef SEASTAR_MODULE
 #include <utility>
 #include <type_traits>
 #include <functional>
+#endif
 
 namespace seastar {
 
@@ -45,8 +49,8 @@ private:
     using move_type = void (*)(noncopyable_function_base* from, noncopyable_function_base* to);
     using destroy_type = void (*)(noncopyable_function_base* func);
 
-    static void empty_move(noncopyable_function_base* from, noncopyable_function_base* to) {}
-    static void empty_destroy(noncopyable_function_base* func) {}
+    static void empty_move(noncopyable_function_base*, noncopyable_function_base*) {}
+    static void empty_destroy(noncopyable_function_base*) {}
 
     static void indirect_move(noncopyable_function_base* from, noncopyable_function_base* to) {
         using void_ptr = void*;
@@ -55,13 +59,21 @@ private:
 
     template <size_t N>
     static void trivial_direct_move(noncopyable_function_base* from, noncopyable_function_base* to) {
+        // We use bytewise copy here since we lost the type. This means that
+        // we will copy any holes/padding not initialized by the move
+        // constructor in direct_vtable_for::initialize().  This is okay,
+        // since we won't use those holes/padding, but gcc doesn't know
+        // that, and complains. Silence it.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wuninitialized"
         // Avoid including <algorithm> just for this
         for (unsigned i = 0; i != N; ++i) {
             to->_storage.direct[i] = from->_storage.direct[i];
         }
+#pragma GCC diagnostic pop
     }
 
-    static void trivial_direct_destroy(noncopyable_function_base* func) {
+    static void trivial_direct_destroy(noncopyable_function_base*) {
     }
 
 private:
@@ -71,12 +83,28 @@ private:
     friend class seastar::noncopyable_function;
 };
 
+template<typename FirstArg = void, typename... RemainingArgs>
+struct is_nothrow_if_object {
+    static constexpr bool value = is_nothrow_if_object<FirstArg>::value && is_nothrow_if_object<RemainingArgs...>::value;
+};
+
+template<typename Arg>
+struct is_nothrow_if_object<Arg> {
+    static constexpr bool value = !std::is_object_v<Arg> || std::is_nothrow_move_constructible_v<Arg>;
+};
+
+template<>
+struct is_nothrow_if_object<> {
+    static constexpr bool value = true;
+};
+
 }
 
 /// A clone of \c std::function, but only invokes the move constructor
 /// of the contained function.
-template <typename Ret, typename... Args>
-class noncopyable_function<Ret (Args...)> : private internal::noncopyable_function_base {
+SEASTAR_MODULE_EXPORT
+template <typename Ret, typename... Args, bool Noexcept>
+class noncopyable_function<Ret (Args...) noexcept(Noexcept)> : private internal::noncopyable_function_base {
     using call_type = Ret (*)(const noncopyable_function* func, Args...);
     struct vtable {
         const call_type call;
@@ -86,7 +114,7 @@ class noncopyable_function<Ret (Args...)> : private internal::noncopyable_functi
 private:
     const vtable* _vtable;
 private:
-    static Ret empty_call(const noncopyable_function* func, Args... args) {
+    static Ret empty_call(const noncopyable_function*, [[maybe_unused]] Args... args) {
         throw std::bad_function_call();
     }
 
@@ -97,7 +125,7 @@ private:
         static Func* access(noncopyable_function* func) { return reinterpret_cast<Func*>(func->_storage.direct); }
         static const Func* access(const noncopyable_function* func) { return reinterpret_cast<const Func*>(func->_storage.direct); }
         static Func* access(noncopyable_function_base* func) { return access(static_cast<noncopyable_function*>(func)); }
-        static Ret call(const noncopyable_function* func, Args... args) {
+        static Ret call(const noncopyable_function* func, Args... args) noexcept(Noexcept) {
             return (*access(const_cast<noncopyable_function*>(func)))(std::forward<Args>(args)...);
         }
         static void move(noncopyable_function_base* from, noncopyable_function_base* to) {
@@ -105,15 +133,15 @@ private:
             destroy(from);
         }
         static constexpr move_type select_move_thunk() {
-            bool can_trivially_move = std::is_trivially_move_constructible<Func>::value
-                    && std::is_trivially_destructible<Func>::value;
+            bool can_trivially_move = std::is_trivially_move_constructible_v<Func>
+                    && std::is_trivially_destructible_v<Func>;
             return can_trivially_move ? trivial_direct_move<internal::used_size<Func>::value> : move;
         }
         static void destroy(noncopyable_function_base* func) {
             access(func)->~Func();
         }
         static constexpr destroy_type select_destroy_thunk() {
-            return std::is_trivially_destructible<Func>::value ? trivial_direct_destroy : destroy;
+            return std::is_trivially_destructible_v<Func> ? trivial_direct_destroy : destroy;
         }
         static void initialize(Func&& from, noncopyable_function* to) {
             new (access(to)) Func(std::move(from));
@@ -126,7 +154,7 @@ private:
         static Func* access(noncopyable_function* func) { return reinterpret_cast<Func*>(func->_storage.indirect); }
         static const Func* access(const noncopyable_function* func) { return reinterpret_cast<const Func*>(func->_storage.indirect); }
         static Func* access(noncopyable_function_base* func) { return access(static_cast<noncopyable_function*>(func)); }
-        static Ret call(const noncopyable_function* func, Args... args) {
+        static Ret call(const noncopyable_function* func, Args... args) noexcept(Noexcept) {
             return (*access(const_cast<noncopyable_function*>(func)))(std::forward<Args>(args)...);
         }
         static void destroy(noncopyable_function_base* func) {
@@ -145,21 +173,23 @@ private:
     template <typename Func>
     static constexpr bool is_direct() {
         return sizeof(Func) <= nr_direct && alignof(Func) <= alignof(storage)
-                && std::is_nothrow_move_constructible<Func>::value;
+                && std::is_nothrow_move_constructible_v<Func>;
     }
     template <typename Func>
     struct vtable_for : select_vtable_for<Func, is_direct<Func>()> {};
 public:
     noncopyable_function() noexcept : _vtable(&_s_empty_vtable) {}
     template <typename Func>
+    SEASTAR_CONCEPT( requires std::is_invocable_r_v<Ret, Func, Args...> )
     noncopyable_function(Func func) {
+        static_assert(!Noexcept || noexcept(std::declval<Func>()(std::declval<Args>()...)));
         vtable_for<Func>::initialize(std::move(func), this);
         _vtable = &vtable_for<Func>::s_vtable;
     }
     template <typename Object, typename... AllButFirstArg>
-    noncopyable_function(Ret (Object::*member)(AllButFirstArg...)) : noncopyable_function(std::mem_fn(member)) {}
+    noncopyable_function(Ret (Object::*member)(AllButFirstArg...) noexcept(Noexcept)) : noncopyable_function(std::mem_fn(member)) {}
     template <typename Object, typename... AllButFirstArg>
-    noncopyable_function(Ret (Object::*member)(AllButFirstArg...) const) : noncopyable_function(std::mem_fn(member)) {}
+    noncopyable_function(Ret (Object::*member)(AllButFirstArg...) const noexcept(Noexcept)) : noncopyable_function(std::mem_fn(member)) {}
 
     ~noncopyable_function() {
         _vtable->destroy(this);
@@ -180,7 +210,8 @@ public:
         return *this;
     }
 
-    Ret operator()(Args... args) const {
+    Ret operator()(Args... args) const noexcept(Noexcept) {
+        static_assert(!Noexcept || internal::is_nothrow_if_object<Args...>::value);
         return _vtable->call(this, std::forward<Args>(args)...);
     }
 
@@ -190,19 +221,16 @@ public:
 };
 
 
-template <typename Ret, typename... Args>
-constexpr typename noncopyable_function<Ret (Args...)>::vtable noncopyable_function<Ret (Args...)>::_s_empty_vtable;
-
-template <typename Ret, typename... Args>
+template <typename Ret, typename... Args, bool Noexcept>
 template <typename Func>
-const typename noncopyable_function<Ret (Args...)>::vtable noncopyable_function<Ret (Args...)>::direct_vtable_for<Func>::s_vtable
-        = noncopyable_function<Ret (Args...)>::direct_vtable_for<Func>::make_vtable();
+const typename noncopyable_function<Ret (Args...) noexcept(Noexcept)>::vtable noncopyable_function<Ret (Args...) noexcept(Noexcept)>::direct_vtable_for<Func>::s_vtable
+        = noncopyable_function<Ret (Args...) noexcept(Noexcept)>::direct_vtable_for<Func>::make_vtable();
 
 
-template <typename Ret, typename... Args>
+template <typename Ret, typename... Args, bool Noexcept>
 template <typename Func>
-const typename noncopyable_function<Ret (Args...)>::vtable noncopyable_function<Ret (Args...)>::indirect_vtable_for<Func>::s_vtable
-        = noncopyable_function<Ret (Args...)>::indirect_vtable_for<Func>::make_vtable();
+const typename noncopyable_function<Ret (Args...) noexcept(Noexcept)>::vtable noncopyable_function<Ret (Args...) noexcept(Noexcept)>::indirect_vtable_for<Func>::s_vtable
+        = noncopyable_function<Ret (Args...) noexcept(Noexcept)>::indirect_vtable_for<Func>::make_vtable();
 
 }
 

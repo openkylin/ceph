@@ -27,7 +27,7 @@
 /// Seastar is a high performance C++ application framework for high
 /// concurrency server applications.
 ///
-/// A good place to start is the [Tutorial](doc/tutorial.md).
+/// A good place to start is the [Tutorial](tutorial.html) or [Multi-page version](split/).
 ///
 /// Please see:
 ///   - \ref future-module Documentation on futures and promises, which are
@@ -40,28 +40,38 @@
 ///   - \ref fiber-module Utilities for managing loosely coupled chains of
 ///          continuations, also known as fibers
 ///   - \ref thread-module Support for traditional threaded execution
+///   - \ref rpc Build high-level communication protocols
+///   - \ref websocket (experimental) Implement a WebSocket-based server
+///   - \ref fsnotifier (experimental) Implement a filesystem modification notifier.
+///
+/// View the [Seastar compatibility statement](./md_compatibility.html) for
+/// information about library evolution.
 
 #include <seastar/core/sstring.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/file-types.hh>
+#include <seastar/core/posix.hh>
 #include <seastar/util/bool_class.hh>
+#include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 #include "./internal/api-level.hh"
+#ifndef SEASTAR_MODULE
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string_view>
+#endif
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 // iostream.hh
 template <class CharType> class input_stream;
 template <class CharType> class output_stream;
 
-// reactor.hh
-SEASTAR_INCLUDE_API_V2 namespace api_v2 { class server_socket; }
-
-#if SEASTAR_API_LEVEL <= 1
-
-SEASTAR_INCLUDE_API_V1 namespace api_v1 { class server_socket; }
-
-#endif
-
+class server_socket;
+class socket;
 class connected_socket;
 class socket_address;
 struct listen_options;
@@ -71,6 +81,18 @@ enum class transport;
 class file;
 struct file_open_options;
 struct stat_data;
+
+namespace net {
+
+using udp_channel = class datagram_channel;
+
+}
+
+namespace experimental {
+// process.hh
+class process;
+struct spawn_parameters;
+}
 
 // Networking API
 
@@ -132,6 +154,57 @@ future<connected_socket> connect(socket_address sa);
 /// \return a \ref connected_socket object, or an exception
 future<connected_socket> connect(socket_address sa, socket_address local, transport proto);
 
+
+/// Creates a socket object suitable for establishing stream-oriented connections
+///
+/// \return a \ref socket object that can be used for establishing connections
+socket make_socket();
+
+/// Creates a udp_channel object suitable for sending UDP packets
+///
+/// The channel is not bound to a local address, and thus can only be used
+/// for sending.
+///
+/// \return a \ref net::udp_channel object that can be used for UDP transfers.
+[[deprecated("Use `make_unbound_datagram_channel` instead")]]
+net::udp_channel make_udp_channel();
+
+
+/// Creates a udp_channel object suitable for sending and receiving UDP packets
+///
+/// \param local local address to bind to
+///
+/// \return a \ref net::udp_channel object that can be used for UDP transfers.
+[[deprecated("Use `make_bound_datagram_channel` instead")]]
+net::udp_channel make_udp_channel(const socket_address& local);
+
+/// Creates a datagram_channel object suitable for sending datagrams to
+/// destinations that belong to the provided address family.
+/// Supported address families: AF_INET, AF_INET6 and AF_UNIX.
+///
+/// Setting family to AF_INET or AF_INET6 creates a datagram_channel that uses
+/// UDP protocol. AF_UNIX creates a datagram_channel that uses UNIX domain
+/// sockets.
+///
+/// The channel is not bound to a local address, and thus can only be used
+/// for sending.
+///
+/// \param family address family in which the \ref datagram_channel will operate
+///
+/// \return a \ref net::datagram_channel object for sending datagrams in a
+/// specified address family.
+net::datagram_channel make_unbound_datagram_channel(sa_family_t family);
+
+/// Creates a datagram_channel object suitable for sending and receiving
+/// datagrams to/from destinations that belong to the provided address family.
+/// Supported address families: AF_INET, AF_INET6 and AF_UNIX.
+///
+/// \param local local address to bind to
+///
+/// \return a \ref net::datagram_channel object for sending/receiving datagrams
+/// in a specified address family.
+net::datagram_channel make_bound_datagram_channel(const socket_address& local);
+
 /// @}
 
 /// \defgroup fileio-module File Input/Output
@@ -162,7 +235,7 @@ future<connected_socket> connect(socket_address sa, socket_address local, transp
 /// containing directory is sync'ed.
 ///
 /// \relates file
-future<file> open_file_dma(sstring name, open_flags flags);
+future<file> open_file_dma(std::string_view name, open_flags flags) noexcept;
 
 /// Opens or creates a file.  The "dma" in the name refers to the fact
 /// that data transfers are unbuffered and uncached.
@@ -177,7 +250,7 @@ future<file> open_file_dma(sstring name, open_flags flags);
 /// containing directory is sync'ed.
 ///
 /// \relates file
-future<file> open_file_dma(sstring name, open_flags flags, file_open_options options);
+future<file> open_file_dma(std::string_view name, open_flags flags, file_open_options options) noexcept;
 
 /// Checks if a given directory supports direct io
 ///
@@ -189,11 +262,11 @@ future<file> open_file_dma(sstring name, open_flags flags, file_open_options opt
 /// It will return if direct io can be used, or throw an std::system_error
 /// exception, with the EINVAL error code.
 ///
-/// A std::system_error with the respective error code is also thrown if \ref path is
+/// A std::system_error with the respective error code is also thrown if \c path is
 /// not a directory.
 ///
 /// \param path the directory we need to verify.
-future<> check_direct_io_support(sstring path);
+future<> check_direct_io_support(std::string_view path) noexcept;
 
 /// Opens a directory.
 ///
@@ -201,10 +274,10 @@ future<> check_direct_io_support(sstring path);
 ///
 /// \return a \ref file object representing a directory.  The only
 ///    legal operations are \ref file::list_directory(),
-///    \ref file::fsync(), and \ref file::close().
+///    \ref file::flush(), and \ref file::close().
 ///
 /// \relates file
-future<file> open_directory(sstring name);
+future<file> open_directory(std::string_view name) noexcept;
 
 /// Creates a new directory.
 ///
@@ -214,7 +287,7 @@ future<file> open_directory(sstring name);
 /// \note
 /// The directory is not guaranteed to be stable on disk, unless the
 /// containing directory is sync'ed.
-future<> make_directory(sstring name, file_permissions permissions = file_permissions::default_dir_permissions);
+future<> make_directory(std::string_view name, file_permissions permissions = file_permissions::default_dir_permissions) noexcept;
 
 /// Ensures a directory exists
 ///
@@ -228,7 +301,7 @@ future<> make_directory(sstring name, file_permissions permissions = file_permis
 /// The directory is not guaranteed to be stable on disk, unless the
 /// containing directory is sync'ed.
 /// If the directory exists, the provided permissions are not applied.
-future<> touch_directory(sstring name, file_permissions permissions = file_permissions::default_dir_permissions);
+future<> touch_directory(std::string_view name, file_permissions permissions = file_permissions::default_dir_permissions) noexcept;
 
 /// Recursively ensures a directory exists
 ///
@@ -242,7 +315,7 @@ future<> touch_directory(sstring name, file_permissions permissions = file_permi
 /// The provided permissions are applied only on the last component in the path, if it needs to be created,
 /// if intermediate directories do not exist, they are created with the default_dir_permissions.
 /// If any directory exists, the provided permissions are not applied.
-future<> recursive_touch_directory(sstring name, file_permissions permissions = file_permissions::default_dir_permissions);
+future<> recursive_touch_directory(std::string_view name, file_permissions permissions = file_permissions::default_dir_permissions) noexcept;
 
 /// Synchronizes a directory to disk
 ///
@@ -251,7 +324,7 @@ future<> recursive_touch_directory(sstring name, file_permissions permissions = 
 /// directory.
 ///
 /// \param name name of the directory to potentially create
-future<> sync_directory(sstring name);
+future<> sync_directory(std::string_view name) noexcept;
 
 
 /// Removes (unlinks) a file or an empty directory
@@ -261,7 +334,7 @@ future<> sync_directory(sstring name);
 /// \note
 /// The removal is not guaranteed to be stable on disk, unless the
 /// containing directory is sync'ed.
-future<> remove_file(sstring name);
+future<> remove_file(std::string_view name) noexcept;
 
 /// Renames (moves) a file.
 ///
@@ -271,7 +344,7 @@ future<> remove_file(sstring name);
 /// \note
 /// The rename is not guaranteed to be stable on disk, unless the
 /// both containing directories are sync'ed.
-future<> rename_file(sstring old_name, sstring new_name);
+future<> rename_file(std::string_view old_name, std::string_view new_name) noexcept;
 
 struct follow_symlink_tag { };
 using follow_symlink = bool_class<follow_symlink_tag>;
@@ -279,12 +352,12 @@ using follow_symlink = bool_class<follow_symlink_tag>;
 /// Return stat information about a file.
 ///
 /// \param name name of the file to return its stat information
-/// \param follow_symlink follow symbolic links.
+/// \param fs a follow_symlink flag to follow symbolic links.
 ///
 /// \return stat_data of the file identified by name.
 /// If name identifies a symbolic link then stat_data is returned either for the target of the link,
 /// with follow_symlink::yes, or for the link itself, with follow_symlink::no.
-future<stat_data> file_stat(sstring name, follow_symlink fs = follow_symlink::yes);
+future<stat_data> file_stat(std::string_view name, follow_symlink fs = follow_symlink::yes) noexcept;
 
 /// Return the size of a file.
 ///
@@ -293,7 +366,7 @@ future<stat_data> file_stat(sstring name, follow_symlink fs = follow_symlink::ye
 /// Note that file_size of a symlink is NOT the size of the symlink -
 /// which is the length of the pathname it contains -
 /// but rather the size of the file to which it points.
-future<uint64_t> file_size(sstring name);
+future<uint64_t> file_size(std::string_view name) noexcept;
 
 /// Check file access.
 ///
@@ -301,49 +374,99 @@ future<uint64_t> file_size(sstring name);
 /// \param flags bit pattern containing type of access to check (read/write/execute or exists).
 ///
 /// If only access_flags::exists is queried, returns true if the file exists, or false otherwise.
-/// Throws a compat::filesystem::filesystem_error exception if any error other than ENOENT is encountered.
+/// Throws a std::filesystem::filesystem_error exception if any error other than ENOENT is encountered.
 ///
 /// If any of the access_flags (read/write/execute) is set, returns true if the file exists and is
 /// accessible with the requested flags, or false if the file exists and is not accessible
 /// as queried.
-/// Throws a compat::filesystem::filesystem_error exception if any error other than EACCES is encountered.
+/// Throws a std::filesystem::filesystem_error exception if any error other than EACCES is encountered.
 /// Note that if any path component leading to the file is not searchable, the file is considered inaccessible
 /// with the requested mode and false will be returned.
-future<bool> file_accessible(sstring name, access_flags flags);
+future<bool> file_accessible(std::string_view name, access_flags flags) noexcept;
 
 /// check if a file exists.
 ///
 /// \param name name of the file to check
-future<bool> file_exists(sstring name);
+future<bool> file_exists(std::string_view name) noexcept;
+
+/// Determine the type of a file (regular file, directory, etc.)
+///
+/// \param name name of the file for which type information is requested
+/// \param follow a follow_symlink flag that determines whether a trailing symbolic link should be followed or not
+///
+/// \return a engaged optional with the file type if lookup was successful; a disengaged optional
+///      if the file (or one of its parent directories) does not exist; an exceptional future on
+///      other errors.
+future<std::optional<directory_entry_type>> file_type(std::string_view name, follow_symlink follow = follow_symlink::yes) noexcept;
+
 
 /// Creates a hard link for a file
 ///
 /// \param oldpath existing file name
 /// \param newpath name of link
 ///
-future<> link_file(sstring oldpath, sstring newpath);
+future<> link_file(std::string_view oldpath, std::string_view newpath) noexcept;
 
 /// Changes the permissions mode of a file or directory
 ///
 /// \param name name of the file ot directory to change
 /// \param permissions permissions to set
 ///
-future<> chmod(sstring name, file_permissions permissions);
+future<> chmod(std::string_view name, file_permissions permissions) noexcept;
 
 /// Return information about the filesystem where a file is located.
 ///
 /// \param name name of the file to inspect
-future<fs_type> file_system_at(sstring name);
+future<fs_type> file_system_at(std::string_view name) noexcept;
 
 /// Return space available to unprivileged users in filesystem where a file is located, in bytes.
 ///
 /// \param name name of the file to inspect
-future<uint64_t> fs_avail(sstring name);
+future<uint64_t> fs_avail(std::string_view name) noexcept;
 
 /// Return free space in filesystem where a file is located, in bytes.
 ///
 /// \param name name of the file to inspect
-future<uint64_t> fs_free(sstring name);
+future<uint64_t> fs_free(std::string_view name) noexcept;
 /// @}
+
+namespace experimental {
+/// \defgroup interprocess-module Interprocess Communication
+///
+/// Seastar provides a set of APIs for interprocess communicate
+
+/// \addtogroup interprocess-module
+/// @{
+
+/// Create a pipe using \c pipe2
+///
+/// \return a tuple of \c file_desc, the first one for reading from the pipe, the second
+/// for writing to it.
+future<std::tuple<file_desc, file_desc>> make_pipe();
+
+/// Spawn a subprocess
+///
+/// \param pathname the path to the executable
+/// \param params parameters for spawning the subprocess
+///
+/// \return a process representing the spawned subprocess
+/// \note
+/// the subprocess is spawned with \c posix_spawn() system call, so the
+/// pathname should be relative or absolute path of the executable.
+future<process> spawn_process(const std::filesystem::path& pathname,
+                              spawn_parameters params);
+/// Spawn a subprocess
+///
+/// \param pathname the path to the executable
+///
+/// \return a process representing the spawned subprocess
+/// \note
+/// the this overload does not specify a \c params parameters for spawning the
+/// subprocess. Instead, it uses the pathname for the \c argv[0] in the params.
+future<process> spawn_process(const std::filesystem::path& pathname);
+/// @}
+}
+
+SEASTAR_MODULE_EXPORT_END
 
 }

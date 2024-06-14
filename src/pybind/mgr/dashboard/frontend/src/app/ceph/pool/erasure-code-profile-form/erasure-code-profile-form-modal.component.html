@@ -1,5 +1,5 @@
-<cd-modal [modalRef]="bsModalRef">
-  <ng-container i18n="form title|Example: Create Pool@@formTitle"
+<cd-modal [modalRef]="activeModal">
+  <ng-container i18n="form title"
                 class="modal-title">{{ action | titlecase }} {{ resource | upperFirst }}</ng-container>
 
   <ng-container class="modal-content">
@@ -40,7 +40,7 @@
             </cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <select class="form-control custom-select"
+            <select class="form-select"
                     id="plugin"
                     name="plugin"
                     formControlName="plugin">
@@ -73,7 +73,8 @@
                    class="form-control"
                    ng-model="$ctrl.erasureCodeProfile.k"
                    placeholder="Data chunks..."
-                   formControlName="k">
+                   formControlName="k"
+                   min="2">
             <span class="invalid-feedback"
                   *ngIf="form.showError('k', frm, 'required')"
                   i18n>This field is required!</span>
@@ -109,7 +110,8 @@
                    name="m"
                    class="form-control"
                    placeholder="Coding chunks..."
-                   formControlName="m">
+                   formControlName="m"
+                   min="1">
             <span class="invalid-feedback"
                   *ngIf="form.showError('m', frm, 'required')"
                   i18n>This field is required!</span>
@@ -137,7 +139,8 @@
                    name="c"
                    class="form-control"
                    placeholder="Coding chunks..."
-                   formControlName="c">
+                   formControlName="c"
+                   min="1">
             <span class="invalid-feedback"
                   *ngIf="form.showError('c', frm, 'min')"
                   i18n>Must be equal to or greater than 1.</span>
@@ -164,17 +167,15 @@
                      class="form-control"
                      placeholder="Helper chunks..."
                      formControlName="d">
-              <span class="input-group-append">
-                <button class="btn btn-light"
-                        id="d-calc-btn"
-                        ngbTooltip="Set d manually or use the plugin's default calculation that maximizes d."
-                        i18n-ngbTooltip
-                        type="button"
-                        (click)="toggleDCalc()">
-                  <i [ngClass]="dCalc ? icons.unlock : icons.lock"
-                     aria-hidden="true"></i>
-                </button>
-              </span>
+              <button class="btn btn-light"
+                      id="d-calc-btn"
+                      ngbTooltip="Set d manually or use the plugin's default calculation that maximizes d."
+                      i18n-ngbTooltip
+                      type="button"
+                      (click)="toggleDCalc()">
+                <i [ngClass]="dCalc ? icons.unlock : icons.lock"
+                   aria-hidden="true"></i>
+              </button>
             </div>
             <span class="form-text text-muted"
                   *ngIf="dCalc"
@@ -212,7 +213,8 @@
                    name="l"
                    class="form-control"
                    placeholder="Coding chunks..."
-                   formControlName="l">
+                   formControlName="l"
+                   min="1">
             <span class="invalid-feedback"
                   *ngIf="form.showError('l', frm, 'required')"
                   i18n>This field is required!</span>
@@ -235,7 +237,7 @@
             </cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <select class="form-control custom-select"
+            <select class="form-select"
                     id="crushFailureDomain"
                     name="crushFailureDomain"
                     formControlName="crushFailureDomain">
@@ -259,7 +261,7 @@
             </cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <select class="form-control custom-select"
+            <select class="form-select"
                     id="crushLocality"
                     name="crushLocality"
                     formControlName="crushLocality">
@@ -286,7 +288,7 @@
             </cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <select class="form-control custom-select"
+            <select class="form-select"
                     id="scalar_mds"
                     name="scalar_mds"
                     formControlName="scalar_mds">
@@ -307,7 +309,7 @@
             </cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <select class="form-control custom-select"
+            <select class="form-select"
                     id="technique"
                     name="technique"
                     formControlName="technique">
@@ -333,7 +335,8 @@
                    name="packetSize"
                    class="form-control"
                    placeholder="Packetsize..."
-                   formControlName="packetSize">
+                   formControlName="packetSize"
+                   min="1">
             <span class="invalid-feedback"
                   *ngIf="form.showError('packetSize', frm, 'min')"
                   i18n>Must be equal to or greater than 1.</span>
@@ -348,7 +351,7 @@
             </cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <select class="form-control custom-select"
+            <select class="form-select"
                     id="crushRoot"
                     name="crushRoot"
                     formControlName="crushRoot">
@@ -371,7 +374,7 @@
             </cd-helper>
           </label>
           <div class="cd-col-form-input">
-            <select class="form-control custom-select"
+            <select class="form-select"
                     id="crushDeviceClass"
                     name="crushDeviceClass"
                     formControlName="crushDeviceClass">
@@ -406,10 +409,9 @@
       </div>
 
       <div class="modal-footer">
-        <cd-submit-button (submitAction)="onSubmit()"
-                          i18n="form action button|Example: Create Pool@@formActionButton"
-                          [form]="frm">{{ action | titlecase }} {{ resource | upperFirst }}</cd-submit-button>
-        <cd-back-button [back]="bsModalRef.hide"></cd-back-button>
+        <cd-form-button-panel (submitActionEvent)="onSubmit()"
+                              [form]="form"
+                              [submitText]="(action | titlecase) + ' ' + (resource | upperFirst)"></cd-form-button-panel>
       </div>
     </form>
   </ng-container>

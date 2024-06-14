@@ -20,30 +20,14 @@
  */
 #ifdef SEASTAR_HAVE_DPDK
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
 #include <cinttypes>
-#include <seastar/core/posix.hh>
-#include "core/vla.hh"
-#include <seastar/net/virtio-interface.hh>
-#include <seastar/core/reactor.hh>
-#include <seastar/core/stream.hh>
-#include <seastar/core/circular_buffer.hh>
-#include <seastar/core/align.hh>
-#include <seastar/core/sstring.hh>
-#include <seastar/core/memory.hh>
-#include <seastar/core/metrics.hh>
-#include <seastar/util/function_input_iterator.hh>
-#include <seastar/util/transform_iterator.hh>
 #include <atomic>
 #include <vector>
 #include <queue>
-#include <seastar/util/std-compat.hh>
-#include <boost/preprocessor.hpp>
-#include <seastar/net/ip.hh>
-#include <seastar/net/const.hh>
-#include <seastar/core/dpdk_rte.hh>
-#include <seastar/net/dpdk.hh>
-#include <seastar/net/toeplitz.hh>
-
 #include <getopt.h>
 #include <malloc.h>
 
@@ -56,6 +40,34 @@
 #include <rte_cycles.h>
 #include <rte_memzone.h>
 #include <rte_vfio.h>
+
+#include <boost/preprocessor.hpp>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/core/posix.hh>
+#include <seastar/core/reactor.hh>
+#include <seastar/net/virtio-interface.hh>
+#include <seastar/core/stream.hh>
+#include <seastar/core/circular_buffer.hh>
+#include <seastar/core/align.hh>
+#include <seastar/core/sstring.hh>
+#include <seastar/core/memory.hh>
+#include <seastar/core/metrics.hh>
+#include <seastar/core/internal/poll.hh>
+#include <seastar/core/units.hh>
+#include <seastar/util/function_input_iterator.hh>
+#include <seastar/util/transform_iterator.hh>
+#include <seastar/util/std-compat.hh>
+#include <seastar/net/ip.hh>
+#include <seastar/net/const.hh>
+#include <seastar/core/dpdk_rte.hh>
+#include <seastar/net/dpdk.hh>
+#include <seastar/net/toeplitz.hh>
+#include <seastar/net/native-stack.hh>
+#include "core/vla.hh"
+#endif
 
 #if RTE_VERSION <= RTE_VERSION_NUM(2,0,0,16)
 
@@ -259,9 +271,9 @@ public:
     ~dpdk_xstats()
     {
         if (_xstats)
-            delete _xstats;
+            delete[] _xstats;
         if (_xstat_names)
-            delete _xstat_names;
+            delete[] _xstat_names;
     }
 
     enum xstat_id {
@@ -397,7 +409,7 @@ public:
                 bool enable_fc)
         : _port_idx(port_idx)
         , _num_queues(num_queues)
-        , _home_cpu(engine().cpu_id())
+        , _home_cpu(this_shard_id())
         , _use_lro(use_lro)
         , _enable_fc(enable_fc)
         , _stats_plugin_name("network")
@@ -415,50 +427,50 @@ public:
         namespace sm = seastar::metrics;
         _metrics.add_group(_stats_plugin_name, {
             // Rx Good
-            sm::make_derive("rx_multicast", _stats.rx.good.mcast,
+            sm::make_counter("rx_multicast", _stats.rx.good.mcast,
                             sm::description("Counts a number of received multicast packets."), {sm::shard_label(_stats_plugin_inst)}),
             // Rx Errors
-            sm::make_derive("rx_crc_errors", _stats.rx.bad.crc,
+            sm::make_counter("rx_crc_errors", _stats.rx.bad.crc,
                             sm::description("Counts a number of received packets with a bad CRC value. "
                                             "A non-zero value of this metric usually indicates a HW problem, e.g. a bad cable."), {sm::shard_label(_stats_plugin_inst)}),
 
-            sm::make_derive("rx_dropped", _stats.rx.bad.dropped,
+            sm::make_counter("rx_dropped", _stats.rx.bad.dropped,
                             sm::description("Counts a number of dropped received packets. "
                                             "A non-zero value of this counter indicated the overflow of ingress HW buffers. "
                                             "This usually happens because of a rate of a sender on the other side of the link is higher than we can process as a receiver."), {sm::shard_label(_stats_plugin_inst)}),
 
-            sm::make_derive("rx_bad_length_errors", _stats.rx.bad.len,
+            sm::make_counter("rx_bad_length_errors", _stats.rx.bad.len,
                             sm::description("Counts a number of received packets with a bad length value. "
                                             "A non-zero value of this metric usually indicates a HW issue: e.g. bad cable."), {sm::shard_label(_stats_plugin_inst)}),
             // Coupled counters:
             // Good
-            sm::make_derive("rx_pause_xon", _stats.rx.good.pause_xon,
+            sm::make_counter("rx_pause_xon", _stats.rx.good.pause_xon,
                             sm::description("Counts a number of received PAUSE XON frames (PAUSE frame with a quanta of zero). "
                                             "When PAUSE XON frame is received our port may resume sending L2 frames. "
                                             "PAUSE XON frames are sent to resume sending that was previously paused with a PAUSE XOFF frame. If ingress "
                                             "buffer falls below the low watermark threshold before the timeout configured in the original PAUSE XOFF frame the receiver may decide to send PAUSE XON frame. "
                                             "A non-zero value of this metric may mean that our sender is bursty and that the spikes overwhelm the receiver on the other side of the link."), {sm::shard_label(_stats_plugin_inst)}),
 
-            sm::make_derive("tx_pause_xon", _stats.tx.good.pause_xon,
+            sm::make_counter("tx_pause_xon", _stats.tx.good.pause_xon,
                             sm::description("Counts a number of sent PAUSE XON frames (L2 flow control frames). "
                                             "A non-zero value of this metric indicates that our ingress path doesn't keep up with the rate of a sender on the other side of the link. "
                                             "Note that if a sender port respects PAUSE frames this will prevent it from sending from ALL its egress queues because L2 flow control is defined "
                                             "on a per-link resolution."), {sm::shard_label(_stats_plugin_inst)}),
 
-            sm::make_derive("rx_pause_xoff", _stats.rx.good.pause_xoff,
+            sm::make_counter("rx_pause_xoff", _stats.rx.good.pause_xoff,
                             sm::description("Counts a number of received PAUSE XOFF frames. "
                                             "A non-zero value of this metric indicates that our egress overwhelms the receiver on the other side of the link and it has to send PAUSE frames to make us stop sending. "
                                             "Note that if our port respects PAUSE frames a reception of a PAUSE XOFF frame will cause ALL egress queues of this port to stop sending."), {sm::shard_label(_stats_plugin_inst)}),
 
-            sm::make_derive("tx_pause_xoff", _stats.tx.good.pause_xoff,
+            sm::make_counter("tx_pause_xoff", _stats.tx.good.pause_xoff,
                             sm::description("Counts a number of sent PAUSE XOFF frames. "
                                             "A non-zero value of this metric indicates that our ingress path (SW and HW) doesn't keep up with the rate of a sender on the other side of the link and as a result "
                                             "our ingress HW buffers overflow."), {sm::shard_label(_stats_plugin_inst)}),
             // Errors
-            sm::make_derive("rx_errors", _stats.rx.bad.total,
+            sm::make_counter("rx_errors", _stats.rx.bad.total,
                             sm::description("Counts the total number of ingress errors: CRC errors, bad length errors, etc."), {sm::shard_label(_stats_plugin_inst)}),
 
-            sm::make_derive("tx_errors", _stats.tx.bad.total,
+            sm::make_counter("tx_errors", _stats.tx.bad.total,
                             sm::description("Counts a total number of egress errors. A non-zero value usually indicated a problem with a HW or a SW driver."), {sm::shard_label(_stats_plugin_inst)}),
         });
     }
@@ -468,7 +480,7 @@ public:
     }
 
     ethernet_address hw_address() override {
-        struct ether_addr mac;
+        struct rte_ether_addr mac;
         rte_eth_macaddr_get(_port_idx, &mac);
 
         return mac.addr_bytes;
@@ -493,8 +505,8 @@ public:
     void set_rss_table();
 
     virtual uint16_t hw_queues_count() override { return _num_queues; }
-    virtual future<> link_ready() { return _link_ready_promise.get_future(); }
-    virtual std::unique_ptr<qp> init_local_queue(boost::program_options::variables_map opts, uint16_t qid) override;
+    virtual future<> link_ready() override { return _link_ready_promise.get_future(); }
+    virtual std::unique_ptr<qp> init_local_queue(const program_options::option_group& opts, uint16_t qid) override;
     virtual unsigned hash2qid(uint32_t hash) override {
         assert(_redir_table.size());
         return _redir_table[hash & (_redir_table.size() - 1)];
@@ -531,7 +543,7 @@ class dpdk_qp : public net::qp {
          * @return TRUE if a packet should be linearized.
          */
         static bool i40e_should_linearize(rte_mbuf *head) {
-            bool is_tso = head->ol_flags & PKT_TX_TCP_SEG;
+            bool is_tso = head->ol_flags & RTE_MBUF_F_TX_TCP_SEG;
 
             // For a non-TSO case: number of fragments should not exceed 8
             if (!is_tso){
@@ -617,30 +629,30 @@ class dpdk_qp : public net::qp {
          */
         static void set_cluster_offload_info(const packet& p, const dpdk_qp& qp, rte_mbuf* head) {
             // Handle TCP checksum offload
-            auto oi = p.offload_info();
+            auto oi = p.get_offload_info();
             if (oi.needs_ip_csum) {
-                head->ol_flags |= PKT_TX_IP_CKSUM;
+                head->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
                 // TODO: Take a VLAN header into an account here
-                head->l2_len = sizeof(struct ether_hdr);
+                head->l2_len = sizeof(struct rte_ether_hdr);
                 head->l3_len = oi.ip_hdr_len;
             }
             if (qp.port().hw_features().tx_csum_l4_offload) {
                 if (oi.protocol == ip_protocol_num::tcp) {
-                    head->ol_flags |= PKT_TX_TCP_CKSUM;
+                    head->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
                     // TODO: Take a VLAN header into an account here
-                    head->l2_len = sizeof(struct ether_hdr);
+                    head->l2_len = sizeof(struct rte_ether_hdr);
                     head->l3_len = oi.ip_hdr_len;
 
                     if (oi.tso_seg_size) {
                         assert(oi.needs_ip_csum);
-                        head->ol_flags |= PKT_TX_TCP_SEG;
+                        head->ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
                         head->l4_len = oi.tcp_hdr_len;
                         head->tso_segsz = oi.tso_seg_size;
                     }
                 } else if (oi.protocol == ip_protocol_num::udp) {
-                    head->ol_flags |= PKT_TX_UDP_CKSUM;
+                    head->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
                     // TODO: Take a VLAN header into an account here
-                    head->l2_len = sizeof(struct ether_hdr);
+                    head->l2_len = sizeof(struct rte_ether_hdr);
                     head->l3_len = oi.ip_hdr_len;
                 }
             }
@@ -940,7 +952,7 @@ build_mbuf_cluster:
          */
         static size_t set_one_data_buf(
             dpdk_qp& qp, rte_mbuf*& m, char* va, size_t buf_len) {
-            static constexpr size_t max_frag_len = 15 * 1024; // 15K
+            static constexpr size_t max_frag_len = 15_KiB;
 
             //
             // Currently we break a buffer on a 15K boundary because 82599
@@ -1028,11 +1040,11 @@ build_mbuf_cluster:
             //
             if (_p) {
                 //
-                // Reset the compat::optional. This in particular is going
+                // Reset the std::optional. This in particular is going
                 // to call the "packet"'s destructor and reset the
                 // "optional" state to "nonengaged".
                 //
-                _p = compat::nullopt;
+                _p = std::nullopt;
 
             } else if (!_is_zc) {
                 return;
@@ -1064,7 +1076,7 @@ build_mbuf_cluster:
     private:
         struct rte_mbuf _mbuf;
         MARKER private_start;
-        compat::optional<packet> _p;
+        std::optional<packet> _p;
         rte_iova_t _buf_iova;
         uint16_t _data_off;
         // TRUE if underlying mbuf has been used in the zero-copy flow
@@ -1392,7 +1404,7 @@ private:
      * @return a "optional" object representing the newly received data if in an
      *         "engaged" state or an error if in a "disengaged" state.
      */
-    compat::optional<packet> from_mbuf(rte_mbuf* m);
+    std::optional<packet> from_mbuf(rte_mbuf* m);
 
     /**
      * Transform an LRO rte_mbuf cluster into the "packet" object.
@@ -1401,7 +1413,7 @@ private:
      * @return a "optional" object representing the newly received LRO packet if
      *         in an "engaged" state or an error if in a "disengaged" state.
      */
-    compat::optional<packet> from_mbuf_lro(rte_mbuf* m);
+    std::optional<packet> from_mbuf_lro(rte_mbuf* m);
 
 private:
     dpdk_device* _dev;
@@ -1412,11 +1424,11 @@ private:
     std::vector<fragment> _frags;
     std::vector<char*> _bufs;
     size_t _num_rx_free_segs = 0;
-    reactor::poller _rx_gc_poller;
+    internal::poller _rx_gc_poller;
     std::unique_ptr<void, free_deleter> _rx_xmem;
     tx_buf_factory _tx_buf_factory;
-    compat::optional<reactor::poller> _rx_poller;
-    reactor::poller _tx_gc_poller;
+    std::optional<reactor::poller> _rx_poller;
+    internal::poller _tx_gc_poller;
     std::vector<rte_mbuf*> _tx_burst;
     uint16_t _tx_burst_idx = 0;
     static constexpr phys_addr_t page_mask = ~(memory::page_size - 1);
@@ -1467,20 +1479,20 @@ int dpdk_device::init_port_start()
     // We want to support all available offload features
     // TODO: below features are implemented in 17.05, should support new ones
     const uint64_t tx_offloads_wanted =
-        DEV_TX_OFFLOAD_VLAN_INSERT      |
-        DEV_TX_OFFLOAD_IPV4_CKSUM       |
-        DEV_TX_OFFLOAD_UDP_CKSUM        |
-        DEV_TX_OFFLOAD_TCP_CKSUM        |
-        DEV_TX_OFFLOAD_SCTP_CKSUM       |
-        DEV_TX_OFFLOAD_TCP_TSO          |
-        DEV_TX_OFFLOAD_UDP_TSO          |
-        DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-        DEV_TX_OFFLOAD_QINQ_INSERT      |
-        DEV_TX_OFFLOAD_VXLAN_TNL_TSO    |
-        DEV_TX_OFFLOAD_GRE_TNL_TSO      |
-        DEV_TX_OFFLOAD_IPIP_TNL_TSO     |
-        DEV_TX_OFFLOAD_GENEVE_TNL_TSO   |
-        DEV_TX_OFFLOAD_MACSEC_INSERT;
+        RTE_ETH_TX_OFFLOAD_VLAN_INSERT      |
+        RTE_ETH_TX_OFFLOAD_IPV4_CKSUM       |
+        RTE_ETH_TX_OFFLOAD_UDP_CKSUM        |
+        RTE_ETH_TX_OFFLOAD_TCP_CKSUM        |
+        RTE_ETH_TX_OFFLOAD_SCTP_CKSUM       |
+        RTE_ETH_TX_OFFLOAD_TCP_TSO          |
+        RTE_ETH_TX_OFFLOAD_UDP_TSO          |
+        RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+        RTE_ETH_TX_OFFLOAD_QINQ_INSERT      |
+        RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO    |
+        RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO      |
+        RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO     |
+        RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO   |
+        RTE_ETH_TX_OFFLOAD_MACSEC_INSERT;
 
     _dev_info.default_txconf.offloads =
         _dev_info.tx_offload_capa & tx_offloads_wanted;
@@ -1517,7 +1529,7 @@ int dpdk_device::init_port_start()
             _dev_info.hash_key_size = 40;
         }
 
-        port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
         /* enable all supported rss offloads */
         port_conf.rx_adv_conf.rss_conf.rss_hf = _dev_info.flow_type_rss_offloads;
         if (_dev_info.hash_key_size) {
@@ -1525,7 +1537,7 @@ int dpdk_device::init_port_start()
             port_conf.rx_adv_conf.rss_conf.rss_key_len = _dev_info.hash_key_size;
         }
     } else {
-        port_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
     }
 
     if (_num_queues > 1) {
@@ -1546,15 +1558,15 @@ int dpdk_device::init_port_start()
     }
 
     // Set Rx VLAN stripping
-    if (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
-        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
+    if (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_VLAN_STRIP) {
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
     }
 
 #ifdef RTE_ETHDEV_HAS_LRO_SUPPORT
     // Enable LRO
-    if (_use_lro && (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO)) {
+    if (_use_lro && (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO)) {
         printf("LRO is on\n");
-        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TCP_LRO;
         _hw_features.rx_lro = true;
     } else
 #endif
@@ -1564,36 +1576,36 @@ int dpdk_device::init_port_start()
     // all together. If this assumption breaks we need to rework the below logic
     // by splitting the csum offload feature bit into separate bits for IPv4,
     // TCP and UDP.
-    assert(((_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-            (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-            (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) ||
-           (!(_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-            !(_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-            !(_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)));
+    assert(((_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+            (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+            (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) ||
+           (!(_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+            !(_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+            !(_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)));
 
     // Set Rx checksum checking
-    if (  (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-          (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-          (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
+    if (  (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+          (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+          (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) {
         printf("RX checksum offload supported\n");
-        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
         _hw_features.rx_csum_offload = 1;
     }
 
-    if ((_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
+    if ((_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
         printf("TX ip checksum offload supported\n");
         _hw_features.tx_csum_ip_offload = 1;
     }
 
     // TSO is supported starting from DPDK v1.8
-    if (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
+    if (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
         printf("TSO is supported\n");
         _hw_features.tx_tso = 1;
     }
 
     // There is no UFO support in the PMDs yet.
 #if 0
-    if (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_TSO) {
+    if (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_TSO) {
         printf("UFO is supported\n");
         _hw_features.tx_ufo = 1;
     }
@@ -1603,13 +1615,13 @@ int dpdk_device::init_port_start()
     // or not set all together. If this assumption breaks we need to rework the
     // below logic by splitting the csum offload feature bit into separate bits
     // for TCP and UDP.
-    assert(((_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-            (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) ||
-           (!(_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-            !(_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)));
+    assert(((_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+            (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) ||
+           (!(_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+            !(_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)));
 
-    if (  (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-          (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
+    if (  (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+          (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
         printf("TX TCP&UDP checksum offload supported\n");
         _hw_features.tx_csum_l4_offload = 1;
     }
@@ -1649,9 +1661,9 @@ void dpdk_device::set_hw_flow_control()
     }
 
     if (_enable_fc) {
-        fc_conf.mode = RTE_FC_FULL;
+        fc_conf.mode = RTE_ETH_FC_FULL;
     } else {
-        fc_conf.mode = RTE_FC_NONE;
+        fc_conf.mode = RTE_ETH_FC_NONE;
     }
 
     ret = rte_eth_dev_flow_ctrl_set(_port_idx, &fc_conf);
@@ -1716,27 +1728,9 @@ void dpdk_device::init_port_fini()
     });
 
     // TODO: replace deprecated filter api with generic flow api
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     if (_num_queues > 1) {
-        if (!rte_eth_dev_filter_supported(_port_idx, RTE_ETH_FILTER_HASH)) {
-            printf("Port %d: HASH FILTER configuration is supported\n", _port_idx);
-
-            // Setup HW touse the TOEPLITZ hash function as an RSS hash function
-            struct rte_eth_hash_filter_info info = {};
-
-            info.info_type = RTE_ETH_HASH_FILTER_GLOBAL_CONFIG;
-            info.info.global_conf.hash_func = RTE_ETH_HASH_FUNCTION_TOEPLITZ;
-
-            if (rte_eth_dev_filter_ctrl(_port_idx, RTE_ETH_FILTER_HASH,
-                                        RTE_ETH_FILTER_SET, &info) < 0) {
-                rte_exit(EXIT_FAILURE, "Cannot set hash function on a port %d\n", _port_idx);
-            }
-        }
-
         set_rss_table();
     }
-    #pragma GCC diagnostic pop
 
     // Wait for a link
     check_port_link_status();
@@ -1876,7 +1870,8 @@ bool dpdk_qp<HugetlbfsMemBackend>::map_dma()
     auto m = memory::get_memory_layout();
     rte_iova_t iova = rte_mem_virt2iova((const void*)m.start);
 
-    return rte_vfio_dma_map(m.start, iova, m.end - m.start) == 0;
+    return rte_vfio_container_dma_map(RTE_VFIO_DEFAULT_CONTAINER_FD,
+                                      m.start, iova, m.end - m.start) == 0;
 }
 
 void dpdk_device::check_port_link_status()
@@ -1897,7 +1892,7 @@ void dpdk_device::check_port_link_status()
             std::cout <<
                 "done\nPort " << static_cast<unsigned>(_port_idx) <<
                 " Link Up - speed " << link.link_speed <<
-                " Mbps - " << ((link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
+                " Mbps - " << ((link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX) ?
                           ("full-duplex") : ("half-duplex\n")) <<
                 std::endl;
             _link_ready_promise.set_value();
@@ -1960,14 +1955,14 @@ dpdk_qp<HugetlbfsMemBackend>::dpdk_qp(dpdk_device* dev, uint16_t qid,
     // Register error statistics: Rx total and checksum errors
     namespace sm = seastar::metrics;
     _metrics.add_group(_stats_plugin_name, {
-        sm::make_derive(_queue_name + "_rx_csum_errors", _stats.rx.bad.csum,
+        sm::make_counter(_queue_name + "_rx_csum_errors", _stats.rx.bad.csum,
                         sm::description("Counts a number of packets received by this queue that have a bad CSUM value. "
                                         "A non-zero value of this metric usually indicates a HW issue, e.g. a bad cable.")),
 
-        sm::make_derive(_queue_name + "_rx_errors", _stats.rx.bad.total,
+        sm::make_counter(_queue_name + "_rx_errors", _stats.rx.bad.total,
                         sm::description("Counts a total number of errors in the ingress path for this queue: CSUM errors, etc.")),
 
-        sm::make_derive(_queue_name + "_rx_no_memory_errors", _stats.rx.bad.no_mem,
+        sm::make_counter(_queue_name + "_rx_no_memory_errors", _stats.rx.bad.no_mem,
                         sm::description("Counts a number of ingress packets received by this HW queue but dropped by the SW due to low memory. "
                                         "A non-zero value indicates that seastar doesn't have enough memory to handle the packet reception or the memory is too fragmented.")),
     });
@@ -1981,7 +1976,7 @@ void dpdk_qp<HugetlbfsMemBackend>::rx_start() {
 }
 
 template<>
-inline compat::optional<packet>
+inline std::optional<packet>
 dpdk_qp<false>::from_mbuf_lro(rte_mbuf* m)
 {
     //
@@ -2011,11 +2006,11 @@ dpdk_qp<false>::from_mbuf_lro(rte_mbuf* m)
     // Drop if allocation failed
     rte_pktmbuf_free(m);
 
-    return compat::nullopt;
+    return std::nullopt;
 }
 
 template<>
-inline compat::optional<packet>
+inline std::optional<packet>
 dpdk_qp<false>::from_mbuf(rte_mbuf* m)
 {
     if (!_dev->hw_features_ref().rx_lro || rte_pktmbuf_is_contiguous(m)) {
@@ -2032,7 +2027,7 @@ dpdk_qp<false>::from_mbuf(rte_mbuf* m)
             // Drop if allocation failed
             rte_pktmbuf_free(m);
 
-            return compat::nullopt;
+            return std::nullopt;
         } else {
             rte_memcpy(buf, rte_pktmbuf_mtod(m, char*), len);
             rte_pktmbuf_free(m);
@@ -2045,7 +2040,7 @@ dpdk_qp<false>::from_mbuf(rte_mbuf* m)
 }
 
 template<>
-inline compat::optional<packet>
+inline std::optional<packet>
 dpdk_qp<true>::from_mbuf_lro(rte_mbuf* m)
 {
     _frags.clear();
@@ -2068,7 +2063,7 @@ dpdk_qp<true>::from_mbuf_lro(rte_mbuf* m)
 }
 
 template<>
-inline compat::optional<packet> dpdk_qp<true>::from_mbuf(rte_mbuf* m)
+inline std::optional<packet> dpdk_qp<true>::from_mbuf(rte_mbuf* m)
 {
     _rx_free_pkts.push_back(m);
     _num_rx_free_segs += m->nb_segs;
@@ -2150,7 +2145,7 @@ void dpdk_qp<HugetlbfsMemBackend>::process_packets(
         struct rte_mbuf *m = bufs[i];
         offload_info oi;
 
-        compat::optional<packet> p = from_mbuf(m);
+        std::optional<packet> p = from_mbuf(m);
 
         // Drop the packet if translation above has failed
         if (!p) {
@@ -2162,14 +2157,14 @@ void dpdk_qp<HugetlbfsMemBackend>::process_packets(
         bytes    += m->pkt_len;
 
         // Set stripped VLAN value if available
-        if ((m->ol_flags & PKT_RX_VLAN_STRIPPED) &&
-            (m->ol_flags & PKT_RX_VLAN)) {
+        if ((m->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) &&
+            (m->ol_flags & RTE_MBUF_F_RX_VLAN)) {
 
             oi.vlan_tci = m->vlan_tci;
         }
 
         if (_dev->hw_features().rx_csum_offload) {
-            if (m->ol_flags & (PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD)) {
+            if (m->ol_flags & (RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD)) {
                 // Packet with bad checksum, just drop it.
                 _stats.rx.bad.inc_csum_err();
                 continue;
@@ -2180,7 +2175,7 @@ void dpdk_qp<HugetlbfsMemBackend>::process_packets(
         }
 
         (*p).set_offload_info(oi);
-        if (m->ol_flags & PKT_RX_RSS_HASH) {
+        if (m->ol_flags & RTE_MBUF_F_RX_RSS_HASH) {
             (*p).set_rss_hash(m->hash.rss);
         }
 
@@ -2219,8 +2214,8 @@ void dpdk_device::set_rss_table()
         return;
 
     int reta_conf_size =
-        std::max(1, _dev_info.reta_size / RTE_RETA_GROUP_SIZE);
-    rte_eth_rss_reta_entry64 reta_conf[reta_conf_size];
+        std::max(1, _dev_info.reta_size / RTE_ETH_RETA_GROUP_SIZE);
+    std::vector<rte_eth_rss_reta_entry64> reta_conf(reta_conf_size);
 
     // Configure the HW indirection table
     unsigned i = 0;
@@ -2231,7 +2226,7 @@ void dpdk_device::set_rss_table()
         }
     }
 
-    if (rte_eth_dev_rss_reta_update(_port_idx, reta_conf, _dev_info.reta_size)) {
+    if (rte_eth_dev_rss_reta_update(_port_idx, reta_conf.data(), _dev_info.reta_size)) {
         rte_exit(EXIT_FAILURE, "Port %d: Failed to update an RSS indirection table", _port_idx);
     }
 
@@ -2242,10 +2237,12 @@ void dpdk_device::set_rss_table()
     }
 }
 
-std::unique_ptr<qp> dpdk_device::init_local_queue(boost::program_options::variables_map opts, uint16_t qid) {
+std::unique_ptr<qp> dpdk_device::init_local_queue(const program_options::option_group& opts, uint16_t qid) {
+    auto net_opts = dynamic_cast<const net::native_stack_options*>(&opts);
+    assert(net_opts);
 
     std::unique_ptr<qp> qp;
-    if (opts.count("hugepages")) {
+    if (net_opts->_hugepages) {
         qp = std::make_unique<dpdk_qp<true>>(this, qid,
                                  _stats_plugin_name + "-" + _stats_plugin_inst);
     } else {
@@ -2295,22 +2292,38 @@ std::unique_ptr<net::device> create_dpdk_net_device(
     return create_dpdk_net_device(*hw_cfg.port_index, smp::count, hw_cfg.lro, hw_cfg.hw_fc);
 }
 
+}
 
-boost::program_options::options_description
-get_dpdk_net_options_description()
-{
-    boost::program_options::options_description opts(
-            "DPDK net options");
+#else
 
-    opts.add_options()
-        ("dpdk-port-index",
-                boost::program_options::value<unsigned>()->default_value(0),
-                "DPDK Port Index");
+#ifdef SEASTAR_MODULE
+module;
+#endif
 
-    opts.add_options()
-        ("hw-fc",
-                boost::program_options::value<std::string>()->default_value("on"),
-                "Enable HW Flow Control (on / off)");
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/net/dpdk.hh>
+#endif
+
+#endif // SEASTAR_HAVE_DPDK
+
+namespace seastar::net {
+
+dpdk_options::dpdk_options(program_options::option_group* parent_group)
+#ifdef SEASTAR_HAVE_DPDK
+    : program_options::option_group(parent_group, "DPDK net options")
+    , dpdk_port_index(*this, "dpdk-port-index",
+                0,
+                "DPDK Port Index")
+    , hw_fc(*this, "hw-fc",
+                "on",
+                "Enable HW Flow Control (on / off)")
+#else
+    : program_options::option_group(parent_group, "DPDK net options", program_options::unused{})
+    , dpdk_port_index(*this, "dpdk-port-index", program_options::unused{})
+    , hw_fc(*this, "hw-fc", program_options::unused{})
+#endif
 #if 0
     opts.add_options()
         ("csum-offload",
@@ -2324,9 +2337,7 @@ get_dpdk_net_options_description()
                 "Enable UDP fragmentation offload feature (on / off)")
         ;
 #endif
-    return opts;
+{
 }
 
 }
-
-#endif // SEASTAR_HAVE_DPDK

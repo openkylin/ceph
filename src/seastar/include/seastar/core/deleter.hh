@@ -21,10 +21,14 @@
 
 #pragma once
 
-#include <memory>
+#ifndef SEASTAR_MODULE
+#include <cassert>
+#include <cstdint>
 #include <cstdlib>
-#include <assert.h>
-#include <type_traits>
+#include <new>
+#include <utility>
+#include <seastar/util/modules.hh>
+#endif
 
 namespace seastar {
 
@@ -44,6 +48,7 @@ namespace seastar {
 ///  - decrementing a reference count somewhere
 ///
 /// A deleter performs its action from its destructor.
+SEASTAR_MODULE_EXPORT
 class deleter final {
 public:
     /// \cond internal
@@ -55,13 +60,13 @@ private:
     impl* _impl = nullptr;
 public:
     /// Constructs an empty deleter that does nothing in its destructor.
-    deleter() = default;
+    deleter() noexcept = default;
     deleter(const deleter&) = delete;
     /// Moves a deleter.
     deleter(deleter&& x) noexcept : _impl(x._impl) { x._impl = nullptr; }
     /// \cond internal
-    explicit deleter(impl* i) : _impl(i) {}
-    deleter(raw_object_tag tag, void* object)
+    explicit deleter(impl* i) noexcept : _impl(i) {}
+    deleter(raw_object_tag, void* object) noexcept
         : _impl(from_raw_object(object)) {}
     /// \endcond
     /// Destroys the deleter and carries out the encapsulated action.
@@ -75,7 +80,7 @@ public:
     /// \return a deleter with the same encapsulated action as this one.
     deleter share();
     /// Checks whether the deleter has an associated action.
-    explicit operator bool() const { return bool(_impl); }
+    explicit operator bool() const noexcept { return bool(_impl); }
     /// \cond internal
     void reset(impl* i) {
         this->~deleter();
@@ -86,21 +91,21 @@ public:
     /// destroyed, both encapsulated actions will be carried out.
     void append(deleter d);
 private:
-    static bool is_raw_object(impl* i) {
+    static bool is_raw_object(impl* i) noexcept {
         auto x = reinterpret_cast<uintptr_t>(i);
         return x & 1;
     }
-    bool is_raw_object() const {
+    bool is_raw_object() const noexcept {
         return is_raw_object(_impl);
     }
-    static void* to_raw_object(impl* i) {
+    static void* to_raw_object(impl* i) noexcept {
         auto x = reinterpret_cast<uintptr_t>(i);
         return reinterpret_cast<void*>(x & ~uintptr_t(1));
     }
-    void* to_raw_object() const {
+    void* to_raw_object() const noexcept {
         return to_raw_object(_impl);
     }
-    impl* from_raw_object(void* object) {
+    impl* from_raw_object(void* object) noexcept {
         auto x = reinterpret_cast<uintptr_t>(object);
         return reinterpret_cast<impl*>(x | 1);
     }
@@ -158,11 +163,13 @@ object_deleter_impl<Object>* make_object_deleter_impl(deleter next, Object obj) 
 }
 /// \endcond
 
+
+SEASTAR_MODULE_EXPORT_BEGIN
 /// Makes a \ref deleter that encapsulates the action of
 /// destroying an object, as well as running another deleter.  The input
 /// object is moved to the deleter, and destroyed when the deleter is destroyed.
 ///
-/// \param d deleter that will become part of the new deleter's encapsulated action
+/// \param next deleter that will become part of the new deleter's encapsulated action
 /// \param o object whose destructor becomes part of the new deleter's encapsulated action
 /// \related deleter
 template <typename Object>
@@ -181,11 +188,14 @@ deleter
 make_deleter(Object o) {
     return make_deleter(deleter(), std::move(o));
 }
+SEASTAR_MODULE_EXPORT_END
 
 /// \cond internal
 struct free_deleter_impl final : deleter::impl {
     void* obj;
     free_deleter_impl(void* obj) : impl(deleter()), obj(obj) {}
+    free_deleter_impl(const free_deleter_impl&) = delete;
+    free_deleter_impl(free_deleter_impl&&) = delete;
     virtual ~free_deleter_impl() override { std::free(obj); }
 };
 /// \endcond
@@ -233,6 +243,7 @@ void deleter::append(deleter d) {
     d._impl = nullptr;
 }
 
+SEASTAR_MODULE_EXPORT_BEGIN
 /// Makes a deleter that calls \c std::free() when it is destroyed.
 ///
 /// \param obj object to free.
@@ -249,7 +260,7 @@ make_free_deleter(void* obj) {
 /// Makes a deleter that calls \c std::free() when it is destroyed, as well
 /// as invoking the encapsulated action of another deleter.
 ///
-/// \param d deleter to invoke.
+/// \param next deleter to invoke.
 /// \param obj object to free.
 /// \related deleter
 inline
@@ -275,6 +286,7 @@ deleter
 make_object_deleter(deleter d, T&& obj) {
     return deleter{make_object_deleter_impl(std::move(d), std::move(obj))};
 }
+SEASTAR_MODULE_EXPORT_END
 
 /// @}
 

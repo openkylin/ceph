@@ -6,19 +6,19 @@ import {
   Validators
 } from '@angular/forms';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Observable, of as observableOf, timer as observableTimer } from 'rxjs';
 import { map, switchMapTo, take } from 'rxjs/operators';
 
-import { DimlessBinaryPipe } from '../pipes/dimless-binary.pipe';
-import { FormatterService } from '../services/formatter.service';
+import { RgwBucketService } from '~/app/shared/api/rgw-bucket.service';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { FormatterService } from '~/app/shared/services/formatter.service';
 
 export function isEmptyInputValue(value: any): boolean {
   return value == null || value.length === 0;
 }
 
-export type existsServiceFn = (value: any) => Observable<boolean>;
+export type existsServiceFn = (value: any, ...args: any[]) => Observable<boolean>;
 
 export class CdValidators {
   /**
@@ -102,6 +102,15 @@ export class CdValidators {
     return Validators.pattern(
       /^-----BEGIN RSA PRIVATE KEY-----(\n|\r|\f)((.+)?((\n|\r|\f).+)*)(\n|\r|\f)-----END RSA PRIVATE KEY-----[\n\r\f]*$/
     );
+  }
+
+  /**
+   * Validator that performs SSL certificate validation of pem format.
+   * @returns {ValidatorFn} A validator function that returns an error map containing `pattern`
+   *   if the validation check fails, otherwise `null`.
+   */
+  static pemCert(): ValidatorFn {
+    return Validators.pattern(/^-----BEGIN .+-----$.+^-----END .+-----$/ms);
   }
 
   /**
@@ -349,7 +358,8 @@ export class CdValidators {
     serviceFn: existsServiceFn,
     serviceFnThis: any = null,
     usernameFn?: Function,
-    uidField = false
+    uidField = false,
+    ...extraArgs: any[]
   ): AsyncValidatorFn {
     let uName: string;
     return (control: AbstractControl): Observable<ValidationErrors | null> => {
@@ -368,7 +378,7 @@ export class CdValidators {
       }
 
       return observableTimer().pipe(
-        switchMapTo(serviceFn.call(serviceFnThis, uName)),
+        switchMapTo(serviceFn.call(serviceFnThis, uName, ...extraArgs)),
         map((resp: boolean) => {
           if (!resp) {
             return null;
@@ -408,7 +418,7 @@ export class CdValidators {
    * be called in a static one.
    */
   static binaryMin(bytes: number): ValidatorFn {
-    return (control: AbstractControl): { [key: string]: (i18n: I18n) => string } | null => {
+    return (control: AbstractControl): { [key: string]: () => string } | null => {
       const formatterService = new FormatterService();
       const currentBytes = new FormatterService().toBytes(control.value);
       if (bytes <= currentBytes) {
@@ -416,7 +426,7 @@ export class CdValidators {
       }
       const value = new DimlessBinaryPipe(formatterService).transform(bytes);
       return {
-        binaryMin: (i18n: I18n) => i18n(`Size has to be at least {{value}} or more`, { value })
+        binaryMin: () => $localize`Size has to be at least ${value} or more`
       };
     };
   }
@@ -428,7 +438,7 @@ export class CdValidators {
    * be called in a static one.
    */
   static binaryMax(bytes: number): ValidatorFn {
-    return (control: AbstractControl): { [key: string]: (i18n: I18n) => string } | null => {
+    return (control: AbstractControl): { [key: string]: () => string } | null => {
       const formatterService = new FormatterService();
       const currentBytes = formatterService.toBytes(control.value);
       if (bytes >= currentBytes) {
@@ -436,7 +446,7 @@ export class CdValidators {
       }
       const value = new DimlessBinaryPipe(formatterService).transform(bytes);
       return {
-        binaryMax: (i18n: I18n) => i18n(`Size has to be at most {{value}} or less`, { value })
+        binaryMax: () => $localize`Size has to be at most ${value} or less`
       };
     };
   }
@@ -484,6 +494,132 @@ export class CdValidators {
         }),
         take(1)
       );
+    };
+  }
+
+  /**
+   * Validate the bucket name. In general, bucket names should follow domain
+   * name constraints:
+   * - Bucket names must be unique.
+   * - Bucket names cannot be formatted as IP address.
+   * - Bucket names can be between 3 and 63 characters long.
+   * - Bucket names must not contain uppercase characters or underscores.
+   * - Bucket names must start with a lowercase letter or number.
+   * - Bucket names must be a series of one or more labels. Adjacent
+   *   labels are separated by a single period (.). Bucket names can
+   *   contain lowercase letters, numbers, and hyphens. Each label must
+   *   start and end with a lowercase letter or a number.
+   */
+  static bucketName(): AsyncValidatorFn {
+    return (control: AbstractControl): Observable<ValidationErrors | null> => {
+      if (control.pristine || !control.value) {
+        return observableOf({ required: true });
+      }
+      const constraints = [];
+      let errorName: string;
+      // - Bucket names cannot be formatted as IP address.
+      constraints.push(() => {
+        const ipv4Rgx = /^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/i;
+        const ipv6Rgx = /^(?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4}$/i;
+        const name = control.value;
+        let notIP = true;
+        if (ipv4Rgx.test(name) || ipv6Rgx.test(name)) {
+          errorName = 'ipAddress';
+          notIP = false;
+        }
+        return notIP;
+      });
+      // - Bucket names can be between 3 and 63 characters long.
+      constraints.push((name: string) => {
+        if (!_.inRange(name.length, 3, 64)) {
+          errorName = 'shouldBeInRange';
+          return false;
+        }
+        // Bucket names can only contain lowercase letters, numbers, periods and hyphens.
+        if (!/^[0-9a-z.-]+$/.test(control.value)) {
+          errorName = 'bucketNameInvalid';
+          return false;
+        }
+        return true;
+      });
+      // - Bucket names must not contain uppercase characters or underscores.
+      // - Bucket names must start with a lowercase letter or number.
+      // - Bucket names must be a series of one or more labels. Adjacent
+      //   labels are separated by a single period (.). Bucket names can
+      //   contain lowercase letters, numbers, and hyphens. Each label must
+      //   start and end with a lowercase letter or a number.
+      constraints.push((name: string) => {
+        const labels = _.split(name, '.');
+        return _.every(labels, (label) => {
+          // Bucket names must not contain uppercase characters or underscores.
+          if (label !== _.toLower(label) || label.includes('_')) {
+            errorName = 'containsUpperCase';
+            return false;
+          }
+          // Bucket labels can contain lowercase letters, numbers, and hyphens.
+          if (!/^[0-9a-z-]+$/.test(label)) {
+            errorName = 'onlyLowerCaseAndNumbers';
+            return false;
+          }
+          // Each label must start and end with a lowercase letter or a number.
+          return _.every([0, label.length - 1], (index) => {
+            errorName = 'lowerCaseOrNumber';
+            return /[a-z]/.test(label[index]) || _.isInteger(_.parseInt(label[index]));
+          });
+        });
+      });
+      if (!_.every(constraints, (func: Function) => func(control.value))) {
+        return observableOf(
+          (() => {
+            switch (errorName) {
+              case 'onlyLowerCaseAndNumbers':
+                return { onlyLowerCaseAndNumbers: true };
+              case 'shouldBeInRange':
+                return { shouldBeInRange: true };
+              case 'ipAddress':
+                return { ipAddress: true };
+              case 'containsUpperCase':
+                return { containsUpperCase: true };
+              case 'lowerCaseOrNumber':
+                return { lowerCaseOrNumber: true };
+              default:
+                return { bucketNameInvalid: true };
+            }
+          })()
+        );
+      }
+
+      return observableOf(null);
+    };
+  }
+
+  static bucketExistence(
+    requiredExistenceResult: boolean,
+    rgwBucketService: RgwBucketService
+  ): AsyncValidatorFn {
+    return (control: AbstractControl): Observable<ValidationErrors | null> => {
+      if (control.pristine || !control.value) {
+        return observableOf({ required: true });
+      }
+      return rgwBucketService
+        .exists(control.value)
+        .pipe(
+          map((existenceResult: boolean) =>
+            existenceResult === requiredExistenceResult ? null : { bucketNameNotAllowed: true }
+          )
+        );
+    };
+  }
+
+  static json(): ValidatorFn {
+    return (control: AbstractControl): Record<string, any> | null => {
+      if (!control.value) return null;
+      try {
+        JSON.parse(control.value);
+        return null;
+      } catch (e) {
+        return { invalidJson: true };
+      }
     };
   }
 }

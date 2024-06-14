@@ -22,11 +22,15 @@
 #pragma once
 
 #include <seastar/core/future.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
 #include <exception>
-#include <functional>
 #include <cassert>
+#endif
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 // A stream/subscription pair is similar to a promise/future pair,
 // but apply to a sequence of values instead of a single value.
@@ -58,7 +62,6 @@ public:
     using next_fn = noncopyable_function<future<> (T...)>;
 
 private:
-    subscription<T...>* _sub = nullptr;
     promise<> _done;
     promise<> _ready;
     next_fn _next;
@@ -75,11 +78,6 @@ public:
     stream() = default;
     stream(const stream&) = delete;
     stream(stream&&) = delete;
-    ~stream() {
-        if (_sub) {
-            _sub->_stream = nullptr;
-        }
-    }
     void operator=(const stream&) = delete;
     void operator=(stream&&) = delete;
 
@@ -130,22 +128,12 @@ class subscription {
     stream<T...>* _stream;
     future<> _done;
     explicit subscription(stream<T...>* s) : _stream(s), _done(s->_done.get_future()) {
-        assert(!_stream->_sub);
-        _stream->_sub = this;
     }
 
 public:
     using next_fn = typename stream<T...>::next_fn;
     subscription(subscription&& x) : _stream(x._stream), _done(std::move(x._done)) {
         x._stream = nullptr;
-        if (_stream) {
-            _stream->_sub = this;
-        }
-    }
-    ~subscription() {
-        if (_stream) {
-            _stream->_sub = nullptr;
-        }
     }
 
     /// \brief Start receiving events from the stream.
@@ -163,12 +151,13 @@ public:
 
     friend class stream<T...>;
 };
+SEASTAR_MODULE_EXPORT_END
 
 template <typename... T>
 inline
 future<>
 stream<T...>::produce(T... data) {
-    auto ret = futurize<void>::apply(_next, std::move(data)...);
+    auto ret = futurize_invoke(_next, std::move(data)...);
     if (ret.available() && !ret.failed()) {
         // Native network stack depends on stream::produce() returning
         // a ready future to push packets along without dropping.  As

@@ -39,7 +39,7 @@ struct GetInfoRequest<librbd::MockTestImageCtx> {
   Context *on_finish = nullptr;
 
   static GetInfoRequest* create(librados::IoCtx& io_ctx,
-                                ContextWQ* context_wq,
+                                librbd::asio::ContextWQ* context_wq,
                                 const std::string& image_id,
                                 cls::rbd::MirrorImage *mirror_image,
                                 PromotionState *promotion_state,
@@ -78,7 +78,7 @@ struct ImageDeleter<librbd::MockTestImageCtx> {
 
   static void trash_move(librados::IoCtx& local_io_ctx,
                          const std::string& global_image_id, bool resync,
-                         ContextWQ* work_queue,
+                         librbd::asio::ContextWQ* work_queue,
                          Context* on_finish) {
     ceph_assert(s_instance != nullptr);
     s_instance->trash_move(global_image_id, resync, on_finish);
@@ -222,7 +222,8 @@ public:
     encode(image_name, bl);
 
     EXPECT_CALL(get_mock_io_ctx(io_ctx),
-                exec(RBD_DIRECTORY, _, StrEq("rbd"), StrEq("dir_get_name"), _, _, _))
+                exec(RBD_DIRECTORY, _, StrEq("rbd"), StrEq("dir_get_name"), _,
+                     _, _, _))
       .WillOnce(DoAll(WithArg<5>(Invoke([bl](bufferlist *out_bl) {
                                           *out_bl = bl;
                                         })),

@@ -41,9 +41,7 @@ static std::string map_option_uuid_cb(const char *value_char)
 static std::string map_option_ip_cb(const char *value_char)
 {
   entity_addr_t a;
-  const char *endptr;
-  if (!a.parse(value_char, &endptr) ||
-      endptr != value_char + strlen(value_char)) {
+  if (!a.parse(value_char)) {
     return "";
   }
 
@@ -534,6 +532,12 @@ int execute_map(const po::variables_map &vm,
   if (vm["exclusive"].as<bool>()) {
     put_map_option("exclusive", "exclusive", &map_options);
   }
+  if (vm["quiesce"].as<bool>()) {
+    std::cerr << "rbd: warning: quiesce is not supported" << std::endl;
+  }
+  if (vm.count("quiesce-hook")) {
+    std::cerr << "rbd: warning: quiesce-hook is not supported" << std::endl;
+  }
 
   // connect to the cluster to get the default pool and the default map
   // options
@@ -648,6 +652,26 @@ int execute_unmap(const po::variables_map &vm,
     return r;
   }
   return 0;
+}
+
+int execute_attach(const po::variables_map &vm,
+                   const std::vector<std::string> &ceph_global_init_args) {
+#if defined(WITH_KRBD)
+  std::cerr << "rbd: krbd does not support attach" << std::endl;
+#else
+  std::cerr << "rbd: kernel device is not supported" << std::endl;
+#endif
+  return -EOPNOTSUPP;
+}
+
+int execute_detach(const po::variables_map &vm,
+                   const std::vector<std::string> &ceph_global_init_args) {
+#if defined(WITH_KRBD)
+  std::cerr << "rbd: krbd does not support detach" << std::endl;
+#else
+  std::cerr << "rbd: kernel device is not supported" << std::endl;
+#endif
+  return -EOPNOTSUPP;
 }
 
 } // namespace kernel

@@ -79,9 +79,9 @@ public:
 	   ceph_seq_t s, ceph_seq_t m, utime_t lis, unsigned st) :
       cap_id(id), wanted(w), issued(i), pending(p), client_follows(cf),
       seq(s), mseq(m), last_issue_stamp(lis), state(st) {}
-    void encode(bufferlist &bl) const;
-    void decode(bufferlist::const_iterator &p);
-    void dump(Formatter *f) const;
+    void encode(ceph::buffer::list &bl) const;
+    void decode(ceph::buffer::list::const_iterator &p);
+    void dump(ceph::Formatter *f) const;
     static void generate_test_instances(std::list<Export*>& ls);
 
     int64_t cap_id = 0;
@@ -97,9 +97,9 @@ public:
   struct Import {
     Import() {}
     Import(int64_t i, ceph_seq_t s, ceph_seq_t m) : cap_id(i), issue_seq(s), mseq(m) {}
-    void encode(bufferlist &bl) const;
-    void decode(bufferlist::const_iterator &p);
-    void dump(Formatter *f) const;
+    void encode(ceph::buffer::list &bl) const;
+    void decode(ceph::buffer::list::const_iterator &p);
+    void dump(ceph::Formatter *f) const;
 
     int64_t cap_id = 0;
     ceph_seq_t issue_seq = 0;
@@ -108,9 +108,9 @@ public:
   struct revoke_info {
     revoke_info() {}
     revoke_info(__u32 b, ceph_seq_t s, ceph_seq_t li) : before(b), seq(s), last_issue(li) {}
-    void encode(bufferlist& bl) const;
-    void decode(bufferlist::const_iterator& bl);
-    void dump(Formatter *f) const;
+    void encode(ceph::buffer::list& bl) const;
+    void decode(ceph::buffer::list::const_iterator& bl);
+    void dump(ceph::Formatter *f) const;
     static void generate_test_instances(std::list<revoke_info*>& ls);
 
     __u32 before = 0;
@@ -182,34 +182,7 @@ public:
     inc_last_seq();
     return last_sent;
   }
-  int confirm_receipt(ceph_seq_t seq, unsigned caps) {
-    int was_revoking = (_issued & ~_pending);
-    if (seq == last_sent) {
-      _revokes.clear();
-      _issued = caps;
-      // don't add bits
-      _pending &= caps;
-    } else {
-      // can i forget any revocations?
-      while (!_revokes.empty() && _revokes.front().seq < seq)
-	_revokes.pop_front();
-      if (!_revokes.empty()) {
-	if (_revokes.front().seq == seq)
-	  _revokes.begin()->before = caps;
-	calc_issued();
-      } else {
-	// seq < last_sent
-	_issued = caps | _pending;
-      }
-    }
-
-    if (was_revoking && _issued == _pending) {
-      item_revoking_caps.remove_myself();
-      item_client_revoking_caps.remove_myself();
-      maybe_clear_notable();
-    }
-    return was_revoking & ~_issued; // return revoked
-  }
+  int confirm_receipt(ceph_seq_t seq, unsigned caps);
   // we may get a release racing with revocations, which means our revokes will be ignored
   // by the client.  clean them out of our _revokes history so we don't wait on them.
   void clean_revoke_from(ceph_seq_t li) {
@@ -351,11 +324,11 @@ public:
   }
 
   // serializers
-  void encode(bufferlist &bl) const;
-  void decode(bufferlist::const_iterator &bl);
-  void dump(Formatter *f) const;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+  void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<Capability*>& ls);
-  
+
   snapid_t client_follows = 0;
   version_t client_xattr_version = 0;
   version_t client_inline_version = 0;
@@ -408,7 +381,7 @@ private:
   ceph_seq_t mseq = 0;
 
   int suppress = 0;
-  unsigned state = 0;
+  uint32_t state = 0;
 
   int lock_cache_allowed = 0;
 };

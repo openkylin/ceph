@@ -1,8 +1,8 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
-import { Motd } from '../api/motd.service';
+import { Motd } from '~/app/shared/api/motd.service';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { MotdNotificationService } from './motd-notification.service';
 
 describe('MotdNotificationService', () => {
@@ -14,7 +14,7 @@ describe('MotdNotificationService', () => {
   });
 
   beforeEach(() => {
-    service = TestBed.get(MotdNotificationService);
+    service = TestBed.inject(MotdNotificationService);
   });
 
   it('should be created', () => {

@@ -1,7 +1,15 @@
 import datetime
 import re
+import string
+import ssl
 
-from typing import Optional
+from typing import Optional, MutableMapping, Tuple, Any
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen, Request
+
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def datetime_now() -> datetime.datetime:
@@ -77,17 +85,17 @@ def parse_timedelta(delta: str) -> Optional[datetime.timedelta]:
 
     >>> parse_timedelta('foo')
 
-    >>> parse_timedelta('2d')
-    datetime.timedelta(days=2)
+    >>> parse_timedelta('2d') == datetime.timedelta(days=2)
+    True
 
-    >>> parse_timedelta("4w")
-    datetime.timedelta(days=28)
+    >>> parse_timedelta("4w") == datetime.timedelta(days=28)
+    True
 
-    >>> parse_timedelta("5s")
-    datetime.timedelta(seconds=5)
+    >>> parse_timedelta("5s") == datetime.timedelta(seconds=5)
+    True
 
-    >>> parse_timedelta("-5s")
-    datetime.timedelta(days=-1, seconds=86395)
+    >>> parse_timedelta("-5s") == datetime.timedelta(days=-1, seconds=86395)
+    True
 
     :param delta: The string to process, e.g. '2h', '10d', '30s'.
     :return: The `datetime.timedelta` object or `None` in case of
@@ -102,6 +110,60 @@ def parse_timedelta(delta: str) -> Optional[datetime.timedelta]:
                      re.IGNORECASE)
     if not parts:
         return None
-    parts = parts.groupdict()  # type: ignore
-    args = {name: int(param) for name, param in parts.items() if param}  # type: ignore
+    parts = parts.groupdict()
+    args = {name: int(param) for name, param in parts.items() if param}
     return datetime.timedelta(**args)
+
+
+def is_hex(s: str, strict: bool = True) -> bool:
+    """Simple check that a string contains only hex chars"""
+    try:
+        int(s, 16)
+    except ValueError:
+        return False
+
+    # s is multiple chars, but we should catch a '+/-' prefix too.
+    if strict:
+        if s[0] not in string.hexdigits:
+            return False
+
+    return True
+
+
+def http_req(hostname: str = '',
+             port: str = '443',
+             method: Optional[str] = None,
+             headers: MutableMapping[str, str] = {},
+             data: Optional[str] = None,
+             endpoint: str = '/',
+             scheme: str = 'https',
+             ssl_verify: bool = False,
+             timeout: Optional[int] = None,
+             ssl_ctx: Optional[Any] = None) -> Tuple[Any, Any, Any]:
+
+    if not ssl_ctx:
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if not ssl_verify:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+        else:
+            ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+
+    url: str = f'{scheme}://{hostname}:{port}{endpoint}'
+    _data = bytes(data, 'ascii') if data else None
+    _headers = headers
+    if data and not method:
+        method = 'POST'
+    if not _headers.get('Content-Type') and method in ['POST', 'PATCH']:
+        _headers['Content-Type'] = 'application/json'
+    try:
+        req = Request(url, _data, _headers, method=method)
+        with urlopen(req, context=ssl_ctx, timeout=timeout) as response:
+            response_str = response.read()
+            response_headers = response.headers
+            response_code = response.code
+        return response_headers, response_str.decode(), response_code
+    except (HTTPError, URLError) as e:
+        log.error(e)
+        # handle error here if needed
+        raise

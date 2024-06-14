@@ -22,7 +22,8 @@
 #include "gtest/gtest.h"
 #include "include/btree_map.h"
 #include "include/mempool.h"
-#include <thread>
+
+using namespace std;
 
 void check_usage(mempool::pool_index_t ix)
 {
@@ -411,7 +412,7 @@ TEST(mempool, check_shard_select)
   for (size_t i = 0; i < samples; i++) {
     workers.push_back(
       std::thread([&](){
-          size_t i = mempool::pool_t::pick_a_shard_int();
+          size_t i = mempool::pick_a_shard_int();
           shards[i]++;
         }));
   }
@@ -435,8 +436,7 @@ TEST(mempool, check_shard_select)
 
 int main(int argc, char **argv)
 {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,

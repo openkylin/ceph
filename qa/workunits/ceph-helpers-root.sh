@@ -28,14 +28,26 @@ function distro_version() {
 }
 
 function install() {
+    if [ $(distro_id) = "ubuntu" ]; then
+        sudo apt-get purge -y gcc
+        sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+    fi
     for package in "$@" ; do
         install_one $package
     done
+    if [ $(distro_id) = "ubuntu" ]; then
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 11
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 11
+        sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc 11
+        sudo update-alternatives --set cc /usr/bin/gcc
+        sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++ 11
+        sudo update-alternatives --set c++ /usr/bin/g++
+    fi
 }
 
 function install_one() {
     case $(distro_id) in
-        ubuntu|debian|devuan)
+        ubuntu|debian|devuan|softiron)
             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
             ;;
         centos|fedora|rhel)
@@ -99,7 +111,7 @@ function pool_read_write() {
 
     ceph osd pool delete $test_pool $test_pool --yes-i-really-really-mean-it || return 1
     ceph osd pool create $test_pool 4 || return 1
-    ceph osd pool set $test_pool size $size || return 1
+    ceph osd pool set $test_pool size $size --yes-i-really-mean-it || return 1
     ceph osd pool set $test_pool min_size $size || return 1
     ceph osd pool application enable $test_pool rados
 

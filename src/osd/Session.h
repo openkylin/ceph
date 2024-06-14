@@ -20,6 +20,7 @@
 #include "global/global_context.h"
 #include "include/spinlock.h"
 #include "OSDCap.h"
+#include "OpRequest.h"
 #include "Watch.h"
 #include "OSDMap.h"
 #include "PeeringState.h"
@@ -99,7 +100,7 @@ struct Backoff : public RefCountedObject {
   //   - both null (teardown), or
   //   - only session is set (and state == DELETING)
   PGRef pg;             ///< owning pg
-  ceph::ref_t<class Session> session;   ///< owning session
+  ceph::ref_t<struct Session> session;   ///< owning session
   hobject_t begin, end; ///< [) range to block, unless ==, then single obj
 
   friend ostream& operator<<(ostream& out, const Backoff& b) {
@@ -137,13 +138,13 @@ struct Session : public RefCountedObject {
     ceph::make_mutex("Session::session_dispatch_lock");
   boost::intrusive::list<OpRequest> waiting_on_map;
 
-  ceph::spinlock sent_epoch_lock;
-  epoch_t last_sent_epoch = 0;
+  ceph::spinlock projected_epoch_lock;
+  epoch_t projected_epoch = 0;
 
   /// protects backoffs; orders inside Backoff::lock *and* PG::backoff_lock
   ceph::mutex backoff_lock = ceph::make_mutex("Session::backoff_lock");
   std::atomic<int> backoff_count= {0};  ///< simple count of backoffs
-  map<spg_t,map<hobject_t,set<ceph::ref_t<Backoff>>>> backoffs;
+  std::map<spg_t, std::map<hobject_t, std::set<ceph::ref_t<Backoff>>>> backoffs;
 
   std::atomic<uint64_t> backoff_seq = {0};
 

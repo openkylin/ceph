@@ -21,33 +21,40 @@
 
 #pragma once
 
-#include <seastar/core/sstring.hh>
-#include "abort_on_ebadf.hh"
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <assert.h>
-#include <utility>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <sys/eventfd.h>
-#include <sys/timerfd.h>
-#include <sys/socket.h>
+#ifndef SEASTAR_MODULE
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <signal.h>
-#include <system_error>
-#include <boost/optional.hpp>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/timerfd.h>
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <assert.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
-#include <memory>
+#include <spawn.h>
+#include <unistd.h>
+#include <utility>
+#include <system_error>
 #include <chrono>
-#include <sys/uio.h>
-
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <set>
+#include <optional>
+#endif
+#include "abort_on_ebadf.hh"
+#include <seastar/core/sstring.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /// \file
 /// \defgroup posix-support POSIX Support
@@ -63,6 +70,9 @@ inline void throw_system_error_on(bool condition, const char* what_arg = "");
 template <typename T>
 inline void throw_kernel_error(T r);
 
+template <typename T>
+inline void throw_pthread_error(T r);
+
 struct mmap_deleter {
     size_t _size;
     void operator()(void* ptr) const;
@@ -77,7 +87,7 @@ class file_desc {
 public:
     file_desc() = delete;
     file_desc(const file_desc&) = delete;
-    file_desc(file_desc&& x) : _fd(x._fd) { x._fd = -1; }
+    file_desc(file_desc&& x) noexcept : _fd(x._fd) { x._fd = -1; }
     ~file_desc() { if (_fd != -1) { ::close(_fd); } }
     void operator=(const file_desc&) = delete;
     file_desc& operator=(file_desc&& x) {
@@ -96,6 +106,8 @@ public:
         _fd = -1;
     }
     int get() const { return _fd; }
+
+    sstring fdinfo() const noexcept;
 
     static file_desc from_fd(int fd) {
         return file_desc(fd);
@@ -137,8 +149,9 @@ public:
         throw_system_error_on(ret == -1, "accept4");
         return file_desc(ret);
     }
+    static file_desc inotify_init(int flags);
     // return nullopt if no connection is availbale to be accepted
-    compat::optional<file_desc> try_accept(socket_address& sa, int flags = 0) {
+    std::optional<file_desc> try_accept(socket_address& sa, int flags = 0) {
         auto ret = ::accept4(_fd, &sa.as_posix_sockaddr(), &sa.addr_length, flags);
         if (ret == -1 && errno == EAGAIN) {
             return {};
@@ -192,6 +205,11 @@ public:
         throw_system_error_on(r == -1, "setsockopt");
         return r;
     }
+    int setsockopt(int level, int optname, const void* data, socklen_t len) {
+        int r = ::setsockopt(_fd, level, optname, data, len);
+        throw_system_error_on(r == -1, "setsockopt");
+        return r;
+    }
     template <typename Data>
     Data getsockopt(int level, int optname) {
         Data data;
@@ -212,7 +230,7 @@ public:
         throw_system_error_on(r == -1, "fstat");
         return buf.st_size;
     }
-    boost::optional<size_t> read(void* buffer, size_t len) {
+    std::optional<size_t> read(void* buffer, size_t len) {
         auto r = ::read(_fd, buffer, len);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -220,7 +238,7 @@ public:
         throw_system_error_on(r == -1, "read");
         return { size_t(r) };
     }
-    boost::optional<ssize_t> recv(void* buffer, size_t len, int flags) {
+    std::optional<ssize_t> recv(void* buffer, size_t len, int flags) {
         auto r = ::recv(_fd, buffer, len, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -228,7 +246,7 @@ public:
         throw_system_error_on(r == -1, "recv");
         return { ssize_t(r) };
     }
-    boost::optional<size_t> recvmsg(msghdr* mh, int flags) {
+    std::optional<size_t> recvmsg(msghdr* mh, int flags) {
         auto r = ::recvmsg(_fd, mh, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -236,7 +254,7 @@ public:
         throw_system_error_on(r == -1, "recvmsg");
         return { size_t(r) };
     }
-    boost::optional<size_t> send(const void* buffer, size_t len, int flags) {
+    std::optional<size_t> send(const void* buffer, size_t len, int flags) {
         auto r = ::send(_fd, buffer, len, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -244,7 +262,7 @@ public:
         throw_system_error_on(r == -1, "send");
         return { size_t(r) };
     }
-    boost::optional<size_t> sendto(socket_address& addr, const void* buf, size_t len, int flags) {
+    std::optional<size_t> sendto(socket_address& addr, const void* buf, size_t len, int flags) {
         auto r = ::sendto(_fd, buf, len, flags, &addr.u.sa, addr.length());
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -252,7 +270,7 @@ public:
         throw_system_error_on(r == -1, "sendto");
         return { size_t(r) };
     }
-    boost::optional<size_t> sendmsg(const msghdr* msg, int flags) {
+    std::optional<size_t> sendmsg(const msghdr* msg, int flags) {
         auto r = ::sendmsg(_fd, msg, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -277,11 +295,17 @@ public:
         throw_system_error_on(r == -1, "getsockname");
         return addr;
     }
+    socket_address get_remote_address() {
+        socket_address addr;
+        auto r = ::getpeername(_fd, &addr.u.sa, &addr.addr_length);
+        throw_system_error_on(r == -1, "getpeername");
+        return addr;
+    }
     void listen(int backlog) {
         auto fd = ::listen(_fd, backlog);
         throw_system_error_on(fd == -1, "listen");
     }
-    boost::optional<size_t> write(const void* buf, size_t len) {
+    std::optional<size_t> write(const void* buf, size_t len) {
         auto r = ::write(_fd, buf, len);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -289,7 +313,7 @@ public:
         throw_system_error_on(r == -1, "write");
         return { size_t(r) };
     }
-    boost::optional<size_t> writev(const iovec *iov, int iovcnt) {
+    std::optional<size_t> writev(const iovec *iov, int iovcnt) {
         auto r = ::writev(_fd, iov, iovcnt);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -330,12 +354,25 @@ public:
         return map(size, PROT_READ, MAP_PRIVATE, offset);
     }
 
+    void spawn_actions_add_close(posix_spawn_file_actions_t* actions) {
+        auto r = ::posix_spawn_file_actions_addclose(actions, _fd);
+        throw_pthread_error(r);
+    }
+
+    void spawn_actions_add_dup2(posix_spawn_file_actions_t* actions, int newfd) {
+        auto r = ::posix_spawn_file_actions_adddup2(actions, _fd, newfd);
+        throw_pthread_error(r);
+    }
 private:
     file_desc(int fd) : _fd(fd) {}
  };
 
 
 namespace posix {
+
+constexpr unsigned rcv_shutdown = 0x1;
+constexpr unsigned snd_shutdown = 0x2;
+inline constexpr unsigned shutdown_mask(int how) { return how + 1; }
 
 /// Converts a duration value to a `timespec`
 ///
@@ -412,8 +449,10 @@ public:
             set(std::forward<Rest>(rest)...);
         }
         void set(stack_size ss) { _stack_size = ss; }
+        void set(cpu_set_t affinity) { _affinity = affinity; }
     private:
         stack_size _stack_size;
+        std::optional<cpu_set_t> _affinity;
         friend class posix_thread;
     };
 };
@@ -432,7 +471,7 @@ void throw_system_error_on(bool condition, const char* what_arg) {
 template <typename T>
 inline
 void throw_kernel_error(T r) {
-    static_assert(std::is_signed<T>::value, "kernel error variables must be signed");
+    static_assert(std::is_signed_v<T>, "kernel error variables must be signed");
     if (r < 0) {
         auto ec = -r;
         if ((ec == EBADF || ec == ENOTSOCK) && is_abort_on_ebadf_enabled()) {
@@ -482,6 +521,9 @@ void pin_this_thread(unsigned cpu_id) {
     (void)r;
 }
 
+std::set<unsigned> get_current_cpuset();
+
 /// @}
 
+SEASTAR_MODULE_EXPORT_END
 }

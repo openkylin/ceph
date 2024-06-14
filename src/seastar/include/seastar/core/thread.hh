@@ -22,20 +22,19 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <seastar/core/thread_impl.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/do_with.hh>
-#include <seastar/core/future-util.hh>
 #include <seastar/core/timer.hh>
-#include <seastar/core/reactor.hh>
 #include <seastar/core/scheduling.hh>
 #include <memory>
-#include <setjmp.h>
 #include <type_traits>
-#include <chrono>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 #include <ucontext.h>
 #include <boost/intrusive/list.hpp>
+#endif
 
 /// \defgroup thread-module Seastar threads
 ///
@@ -50,7 +49,7 @@
 ///
 /// Like other seastar code, seastar threads may not issue blocking system calls.
 ///
-/// A seastar thread blocking point is any function that returns a \ref future<>.
+/// A seastar thread blocking point is any function that returns a \ref future.
 /// you block by calling \ref future<>::get(); this waits for the future to become
 /// available, and in the meanwhile, other seastar threads and seastar non-threaded
 /// code may execute.
@@ -72,16 +71,18 @@ namespace seastar {
 
 /// \addtogroup thread-module
 /// @{
-
+SEASTAR_MODULE_EXPORT_BEGIN
 class thread;
 class thread_attributes;
 
 /// Class that holds attributes controling the behavior of a thread.
 class thread_attributes {
 public:
-    compat::optional<seastar::scheduling_group> sched_group;
+    std::optional<seastar::scheduling_group> sched_group;
+    // For stack_size 0, a default value will be used (128KiB when writing this comment)
+    size_t stack_size = 0;
 };
-
+SEASTAR_MODULE_EXPORT_END
 
 /// \cond internal
 extern thread_local jmp_buf_link g_unthreaded_context;
@@ -92,10 +93,12 @@ extern thread_local jmp_buf_link g_unthreaded_context;
 class thread_context final : private task {
     struct stack_deleter {
         void operator()(char *ptr) const noexcept;
+        int valgrind_id;
+        stack_deleter(int valgrind_id);
     };
     using stack_holder = std::unique_ptr<char[], stack_deleter>;
 
-    stack_holder _stack{make_stack()};
+    stack_holder _stack;
     noncopyable_function<void ()> _func;
     jmp_buf_link _context;
     promise<> _done;
@@ -110,9 +113,9 @@ class thread_context final : private task {
     static thread_local all_thread_list _all_threads;
 private:
     static void s_main(int lo, int hi); // all parameters MUST be 'int' for makecontext
-    void setup();
+    void setup(size_t stack_size);
     void main();
-    stack_holder make_stack();
+    stack_holder make_stack(size_t stack_size);
     virtual void run_and_dispose() noexcept override; // from task class
 public:
     thread_context(thread_attributes attr, noncopyable_function<void ()> func);
@@ -122,6 +125,7 @@ public:
     bool should_yield() const;
     void reschedule();
     void yield();
+    task* waiting_task() noexcept override { return _done.waiting_task(); }
     friend class thread;
     friend void thread_impl::switch_in(thread_context*);
     friend void thread_impl::switch_out(thread_context*);
@@ -130,7 +134,7 @@ public:
 
 /// \endcond
 
-
+SEASTAR_MODULE_EXPORT
 /// \brief thread - stateful thread of execution
 ///
 /// Threads allow using seastar APIs in a blocking manner,
@@ -211,6 +215,7 @@ thread::join() {
     return _context->_done.get_future();
 }
 
+SEASTAR_MODULE_EXPORT_BEGIN
 /// Executes a callable in a seastar thread.
 ///
 /// Runs a block of code in a threaded context,
@@ -236,25 +241,30 @@ thread::join() {
 /// \endcode
 template <typename Func, typename... Args>
 inline
-futurize_t<std::result_of_t<std::decay_t<Func>(std::decay_t<Args>...)>>
-async(thread_attributes attr, Func&& func, Args&&... args) {
-    using return_type = std::result_of_t<std::decay_t<Func>(std::decay_t<Args>...)>;
+futurize_t<std::invoke_result_t<Func, Args...>>
+async(thread_attributes attr, Func&& func, Args&&... args) noexcept {
+    using return_type = std::invoke_result_t<Func, Args...>;
     struct work {
         thread_attributes attr;
         Func func;
         std::tuple<Args...> args;
-        promise<return_type> pr;
-        thread th;
+        promise<return_type> pr{};
+        thread th{};
     };
-    return do_with(work{std::move(attr), std::forward<Func>(func), std::forward_as_tuple(std::forward<Args>(args)...)}, [] (work& w) mutable {
+
+    try {
+        auto wp = std::make_unique<work>(work{std::move(attr), std::forward<Func>(func), std::forward_as_tuple(std::forward<Args>(args)...)});
+        auto& w = *wp;
         auto ret = w.pr.get_future();
         w.th = thread(std::move(w.attr), [&w] {
             futurize<return_type>::apply(std::move(w.func), std::move(w.args)).forward_to(std::move(w.pr));
         });
         return w.th.join().then([ret = std::move(ret)] () mutable {
             return std::move(ret);
-        });
-    });
+        }).finally([wp = std::move(wp)] {});
+    } catch (...) {
+        return futurize<return_type>::make_exception_future(std::current_exception());
+    }
 }
 
 /// Executes a callable in a seastar thread.
@@ -268,10 +278,11 @@ async(thread_attributes attr, Func&& func, Args&&... args) {
 /// \return whatever \c func returns, as a future.
 template <typename Func, typename... Args>
 inline
-futurize_t<std::result_of_t<std::decay_t<Func>(std::decay_t<Args>...)>>
-async(Func&& func, Args&&... args) {
+futurize_t<std::invoke_result_t<Func, Args...>>
+async(Func&& func, Args&&... args) noexcept {
     return async(thread_attributes{}, std::forward<Func>(func), std::forward<Args>(args)...);
 }
 /// @}
 
+SEASTAR_MODULE_EXPORT_END
 }

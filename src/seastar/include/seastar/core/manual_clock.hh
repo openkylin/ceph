@@ -21,10 +21,17 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
+#include <seastar/core/timer.hh>
+#include <seastar/util/modules.hh>
+
+#include <atomic>
 #include <chrono>
+#endif
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT
 class manual_clock {
 public:
     using rep = int64_t;
@@ -33,13 +40,13 @@ public:
     using time_point = std::chrono::time_point<manual_clock, duration>;
 private:
     static std::atomic<rep> _now;
-    static void expire_timers();
+    static void expire_timers() noexcept;
 public:
-    manual_clock();
-    static time_point now() {
+    manual_clock() noexcept;
+    static time_point now() noexcept {
         return time_point(duration(_now.load(std::memory_order_relaxed)));
     }
-    static void advance(duration d);
+    static void advance(duration d) noexcept;
 };
 
 extern template class timer<manual_clock>;
