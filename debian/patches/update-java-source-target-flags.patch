@@ -1,18 +1,27 @@
-Description: use --release 8 instead of -source/-target
- Instead of -source/-target ceph should be build with --release for OpenJDK 9
- or later so that the bootclasspath is also set, as per JEP-247, otherwise it
- risks incurring into binary incompatibility when run with an earlier OpenJDK.
- OpenJDK minimum compatibility release has been updated to 8.
-Author: Tiago Stürmer Daitx <tiago.daitx@ubuntu.com>
+From: =?utf-8?q?Tiago_St=C3=BCrmer_Daitx?= <tiago.daitx@ubuntu.com>
+Date: Fri, 14 Jun 2024 09:45:09 +0800
+Subject: use --release 8 instead of -source/-target
+
 Bug-Ubuntu: https://launchpad.net/bugs/1756854
 Bug-Ubuntu: https://launchpad.net/bugs/1766998
 Forwarded: no
 Last-Update: 2018-04-24
----
 
+Instead of -source/-target ceph should be build with --release for OpenJDK 9
+or later so that the bootclasspath is also set, as per JEP-247, otherwise it
+risks incurring into binary incompatibility when run with an earlier OpenJDK.
+OpenJDK minimum compatibility release has been updated to 8.
+Last-Update: 2018-04-24
+---
+ src/java/CMakeLists.txt         | 8 +-------
+ src/rocksdb/java/CMakeLists.txt | 2 +-
+ 2 files changed, 2 insertions(+), 8 deletions(-)
+
+diff --git a/src/java/CMakeLists.txt b/src/java/CMakeLists.txt
+index 62b5259..dc2d87c 100644
 --- a/src/java/CMakeLists.txt
 +++ b/src/java/CMakeLists.txt
-@@ -15,13 +15,7 @@
+@@ -15,13 +15,7 @@ set(java_srcs
    java/com/ceph/fs/CephStat.java
    java/com/ceph/fs/CephStatVFS.java)
  
@@ -27,9 +36,11 @@ Last-Update: 2018-04-24
  set(jni_header_dir "${CMAKE_CURRENT_BINARY_DIR}/native")
  if(CMAKE_VERSION VERSION_LESS 3.11)
    set(CMAKE_JAVA_COMPILE_FLAGS ${CMAKE_JAVA_COMPILE_FLAGS} "-h" ${jni_header_dir})
+diff --git a/src/rocksdb/java/CMakeLists.txt b/src/rocksdb/java/CMakeLists.txt
+index 5d62630..072402f 100644
 --- a/src/rocksdb/java/CMakeLists.txt
 +++ b/src/rocksdb/java/CMakeLists.txt
-@@ -4,7 +4,7 @@
+@@ -4,7 +4,7 @@ if(${CMAKE_VERSION} VERSION_LESS "3.11.4")
      message("Please consider switching to CMake 3.11.4 or newer")
  endif()
  

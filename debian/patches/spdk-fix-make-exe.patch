@@ -1,17 +1,17 @@
---- a/cmake/modules/BuildSPDK.cmake
-+++ b/cmake/modules/BuildSPDK.cmake
-@@ -55,7 +55,7 @@
-     # unset $CFLAGS, otherwise it will interfere with how SPDK sets
-     # its include directory.
-     # unset $LDFLAGS, otherwise SPDK will fail to mock some functions.
--    BUILD_COMMAND env -i PATH=$ENV{PATH} CC=${CMAKE_C_COMPILER} ${make_cmd} EXTRA_CFLAGS=${spdk_CFLAGS}
-+    BUILD_COMMAND env -i V=1 PATH=$ENV{PATH} CC=${CMAKE_C_COMPILER} ${MAKE_EXECUTABLE} EXTRA_CFLAGS=${spdk_CFLAGS}
-     BUILD_IN_SOURCE 1
-     BUILD_BYPRODUCTS ${spdk_libs}
-     INSTALL_COMMAND ""
+From: openKylin Developers <packaging@lists.openkylin.top>
+Date: Fri, 14 Jun 2024 09:45:10 +0800
+Subject: spdk-fix-make-exe
+
+---
+ CMakeLists.txt                | 2 +-
+ cmake/modules/BuildSPDK.cmake | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f3560cc..a8b7c8e 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -288,7 +288,7 @@
+@@ -288,7 +288,7 @@ if(WITH_BLUESTORE_PMEM)
  endif()
  
  CMAKE_DEPENDENT_OPTION(WITH_SPDK "Enable SPDK" OFF
@@ -20,3 +20,16 @@
  if(WITH_SPDK)
    if(NOT WITH_BLUESTORE)
      message(SEND_ERROR "Please enable WITH_BLUESTORE for using SPDK")
+diff --git a/cmake/modules/BuildSPDK.cmake b/cmake/modules/BuildSPDK.cmake
+index d6ce97e..1b9d275 100644
+--- a/cmake/modules/BuildSPDK.cmake
++++ b/cmake/modules/BuildSPDK.cmake
+@@ -55,7 +55,7 @@ macro(build_spdk)
+     # unset $CFLAGS, otherwise it will interfere with how SPDK sets
+     # its include directory.
+     # unset $LDFLAGS, otherwise SPDK will fail to mock some functions.
+-    BUILD_COMMAND env -i PATH=$ENV{PATH} CC=${CMAKE_C_COMPILER} ${make_cmd} EXTRA_CFLAGS=${spdk_CFLAGS}
++    BUILD_COMMAND env -i V=1 PATH=$ENV{PATH} CC=${CMAKE_C_COMPILER} ${MAKE_EXECUTABLE} EXTRA_CFLAGS=${spdk_CFLAGS}
+     BUILD_IN_SOURCE 1
+     BUILD_BYPRODUCTS ${spdk_libs}
+     INSTALL_COMMAND ""

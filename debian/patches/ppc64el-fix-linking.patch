@@ -1,11 +1,30 @@
-Description: Switch back to static linking
-  Resolves linking failures on ppc64el
-Author: James Page <james.page@canonical.com>
+From: James Page <james.page@canonical.com>
+Date: Fri, 14 Jun 2024 09:45:10 +0800
+Subject: Switch back to static linking
+
 Forwarded: not-needed
 
+ Resolves linking failures on ppc64el
+---
+ src/arch/CMakeLists.txt   | 2 +-
+ src/common/CMakeLists.txt | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/arch/CMakeLists.txt b/src/arch/CMakeLists.txt
+index e849e48..ba11573 100644
+--- a/src/arch/CMakeLists.txt
++++ b/src/arch/CMakeLists.txt
+@@ -9,4 +9,4 @@ elseif(HAVE_PPC64LE OR HAVE_PPC64 OR HAVE_PPC)
+   list(APPEND arch_srcs ppc.c)
+ endif()
+ 
+-add_library(arch OBJECT ${arch_srcs})
++add_library(arch STATIC ${arch_srcs})
+diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
+index 3deecc3..9161324 100644
 --- a/src/common/CMakeLists.txt
 +++ b/src/common/CMakeLists.txt
-@@ -230,7 +230,7 @@
+@@ -230,7 +230,7 @@ elseif(HAVE_ARMV8_CRC)
      crc32c_aarch64.c)
  endif(HAVE_INTEL)
  
@@ -14,11 +33,3 @@ Forwarded: not-needed
  
  if(HAVE_ARMV8_CRC)
    set_target_properties(crc32 PROPERTIES
---- a/src/arch/CMakeLists.txt
-+++ b/src/arch/CMakeLists.txt
-@@ -9,4 +9,4 @@
-   list(APPEND arch_srcs ppc.c)
- endif()
- 
--add_library(arch OBJECT ${arch_srcs})
-+add_library(arch STATIC ${arch_srcs})

@@ -1,11 +1,20 @@
-Description: This defines HAVE_REENTRANT_STRSIGNAL as sys_siglist no longer
-  exists with glibc 2.32 and all programs should use strsignal instead.
+From: openKylin Developers <packaging@lists.openkylin.top>
+Date: Fri, 14 Jun 2024 09:45:09 +0800
+Subject: This defines HAVE_REENTRANT_STRSIGNAL as sys_siglist no longer
+
 Forwarded: no
 Last-Update: 2020-09-21
 
+ exists with glibc 2.32 and all programs should use strsignal instead.
+---
+ CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d70d471..f70051d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -566,7 +566,7 @@
+@@ -566,7 +566,7 @@ if(WITH_THREAD_SAFE_RES_QUERY)
    set(HAVE_THREAD_SAFE_RES_QUERY 1 CACHE INTERNAL "Thread safe res_query supported.")
  endif()
  

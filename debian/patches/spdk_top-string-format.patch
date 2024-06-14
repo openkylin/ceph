@@ -1,8 +1,10 @@
-Description: spdk_top: always use "%s"-style format for printf()-style functions
- `ncuses-6.3` added printf-style function attributes and now makes
- it easier to catch cases when user input is used in palce of format
- string when built with CFLAGS=-Werror=format-security:
+From: openKylin Developers <packaging@lists.openkylin.top>
+Date: Fri, 14 Jun 2024 09:45:10 +0800
+Subject: spdk_top: always use "%s"-style format for printf()-style functions
 
+`ncuses-6.3` added printf-style function attributes and now makes
+it easier to catch cases when user input is used in palce of format
+string when built with CFLAGS=-Werror=format-security:
     spdk_top.c:1135:34: error: format not a string literal and no format arguments [-Werror=format-security]
      1135 |         mvwprintw(win, row, col, tmp_str);
           |                                  ^~~~~~~
@@ -10,9 +12,15 @@ Description: spdk_top: always use "%s"-style format for printf()-style functions
  Let's wrap all the missing places with "%s" format.
 
 Origin: https://review.spdk.io/gerrit/c/spdk/spdk/+/10300
+---
+ src/spdk/app/spdk_top/spdk_top.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/spdk/app/spdk_top/spdk_top.c b/src/spdk/app/spdk_top/spdk_top.c
+index 8531cd3..199d16f 100644
 --- a/src/spdk/app/spdk_top/spdk_top.c
 +++ b/src/spdk/app/spdk_top/spdk_top.c
-@@ -655,7 +655,7 @@
+@@ -655,7 +655,7 @@ print_max_len(WINDOW *win, int row, uint16_t col, uint16_t max_len, enum str_ali
  		snprintf(&tmp_str[max_str - DOTS_STR_LEN - 2], DOTS_STR_LEN, "%s", dots);
  	}
  
@@ -21,7 +29,7 @@ Origin: https://review.spdk.io/gerrit/c/spdk/spdk/+/10300
  
  	refresh();
  	wrefresh(win);
-@@ -1861,13 +1861,13 @@
+@@ -1861,13 +1861,13 @@ show_stats(void)
  			time_last = time_now.tv_sec;
  			rc = get_data();
  			if (rc) {

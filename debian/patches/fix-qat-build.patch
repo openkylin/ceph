@@ -1,10 +1,17 @@
-Description: Build the QAT libs on x86-64 instead of !aarch64
-Author: Luciano Lo Giudice <luciano.logiudice@canonical.com>
-Forwarded: no
+From: Luciano Lo Giudice <luciano.logiudice@canonical.com>
+Date: Fri, 14 Jun 2024 09:45:10 +0800
+Subject: Build the QAT libs on x86-64 instead of !aarch64
 
+Forwarded: no
+---
+ CMakeLists.txt | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a8b7c8e..2743822 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -309,11 +309,11 @@
+@@ -309,11 +309,11 @@ endif()
  option(WITH_BLUEFS "libbluefs library" OFF)
  
  CMAKE_DEPENDENT_OPTION(WITH_QATLIB "Enable QAT with qatlib" ON
