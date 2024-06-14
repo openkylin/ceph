@@ -1,3 +1,0 @@
-version=3
-opts="uversionmangle=s/-/~/,dversionmangle=s/\+dfsg\d*$//" \
- http://download.ceph.com/tarballs/ceph-(\d.*)\.tar\.gz

@@ -1,5 +1,0 @@
-ceph (19.2.0-ok1) nile; urgency=medium
-
-  * Build for openKylin.
-
- -- liwenjun <liwenjun@kylinos.cn>  Fri, 14 Jun 2024 09:29:00 +0800
