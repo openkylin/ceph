@@ -640,7 +640,6 @@ endif(NOT WITH_SYSTEM_ROCKSDB)
 
 if(WITH_MGR)
   add_subdirectory(mgr)
-  add_subdirectory(exporter)
 endif()
 
 set(librados_config_srcs
@@ -945,8 +944,7 @@ add_custom_target(vstart-base DEPENDS
     rados)
 foreach(dep
     cython_rados
-    ceph-mgr
-    ceph-exporter)
+    ceph-mgr)
   if(TARGET ${dep})
     add_dependencies(vstart-base ${dep})
   endif()

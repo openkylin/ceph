@@ -105,7 +105,7 @@ class packet final {
         unsigned _len = 0;
         uint16_t _nr_frags = 0;
         uint16_t _allocated_frags;
-        offload_info _offload_info;
+        struct offload_info _offload_info;
         std::optional<uint32_t> _rss_hash;
         char _data[internal_data_size]; // only _frags[0] may use
         unsigned _headroom = internal_data_size; // in _data

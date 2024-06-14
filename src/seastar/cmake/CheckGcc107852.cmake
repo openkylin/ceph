@@ -7,7 +7,7 @@ cmake_push_check_state (RESET)
 # Seastar_PRIVATE_CXX_FLAGS, which is not applied to CMAKE_CXX_FLAGS, so
 # let's apply them explicitly.
 set (CMAKE_REQUIRED_FLAGS "-Werror=stringop-overflow -Werror=array-bound")
-set (CMAKE_REQUIRED_LIBRARIES fmt::fmt)
+set (CMAKE_REQUIRED_LIBRARIES fmt)
 
 # see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=107852
 check_cxx_source_compiles ("

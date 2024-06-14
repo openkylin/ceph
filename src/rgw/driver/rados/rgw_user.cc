@@ -726,7 +726,14 @@ int RGWAccessKeyPool::add(const DoutPrefixProvider *dpp,
 
   ret = check_op(op_state, &subprocess_msg);
   if (ret < 0) {
-    set_err_msg(err_msg, "unable to parse request, " + subprocess_msg);
+    if (op_state.is_populated() && (user_id == op_state.get_user_id())) {
+      set_err_msg(err_msg, "unable to create user " + user_id.to_str ()
+		  + " because user id " + op_state.get_user_id().to_str()
+		  + " already exists with email "
+		  + op_state.get_user_email());
+    } else {
+      set_err_msg(err_msg, "unable to parse request, " + subprocess_msg);
+    }
     return ret;
   }
 
@@ -802,7 +809,14 @@ int RGWAccessKeyPool::remove(const DoutPrefixProvider *dpp,
 
   ret = check_op(op_state, &subprocess_msg);
   if (ret < 0) {
-    set_err_msg(err_msg, "unable to parse request, " + subprocess_msg);
+    if (op_state.is_populated() && (user_id == op_state.get_user_id())) {
+      set_err_msg(err_msg, "unable to create user " + user_id.to_str ()
+		  + " because user id " + op_state.get_user_id().to_str()
+		  + " already exists with email "
+		  + op_state.get_user_email());
+    } else {
+      set_err_msg(err_msg, "unable to parse request, " + subprocess_msg);
+    }
     return ret;
   }
 

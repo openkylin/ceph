@@ -655,7 +655,7 @@ print_max_len(WINDOW *win, int row, uint16_t col, uint16_t max_len, enum str_ali
 		snprintf(&tmp_str[max_str - DOTS_STR_LEN - 2], DOTS_STR_LEN, "%s", dots);
 	}
 
-	mvwprintw(win, row, col, tmp_str);
+	mvwprintw(win, row, col, "%s", tmp_str);
 
 	refresh();
 	wrefresh(win);
@@ -1861,13 +1861,13 @@ show_stats(void)
 			time_last = time_now.tv_sec;
 			rc = get_data();
 			if (rc) {
-				mvprintw(g_max_row - 1, g_max_col - strlen(refresh_error) - 2, refresh_error);
+				mvprintw(g_max_row - 1, g_max_col - strlen(refresh_error) - 2, "%s", refresh_error);
 			}
 
 			max_pages = refresh_tab(active_tab, current_page);
 
 			snprintf(current_page_str, CURRENT_PAGE_STR_LEN - 1, "Page: %d/%d", current_page + 1, max_pages);
-			mvprintw(g_max_row - 1, 1, current_page_str);
+			mvprintw(g_max_row - 1, 1, "%s", current_page_str);
 
 			free_data();
 

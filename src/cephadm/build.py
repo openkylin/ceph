@@ -346,7 +346,7 @@ def _install_pip_deps(tempdir, config):
     if has_venv:
         log.info('Attempting to create a virtualenv')
         venv = tempdir / "_venv_"
-        _run([sys.executable, '-m', 'venv', str(venv)])
+        _run([sys.executable, '-m', 'venv', str(venv), "--system-site-packages"])
         executable = str(venv / "bin" / pathlib.Path(executable).name)
         # try to upgrade pip in the virtualenv. if it fails ignore the error
         _run([executable, '-m', 'pip', 'install', '-U', 'pip'])
