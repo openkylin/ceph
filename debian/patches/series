@@ -1,0 +1,17 @@
+lp1986747-fix-osd-class-dir.patch
+enable-strsignal.patch
+update-java-source-target-flags.patch
+# Debian misc fixes
+fix-bash-completion-location
+riscv64-link-pthread.patch
+# text relocation fix AARCH64
+bug1914584.patch
+spdk_top-string-format.patch
+spdk-fix-make-exe.patch
+fix-CheckCxxAtomic-riscv64.patch
+patch-out-exporter.patch
+fix-mantic-misc.patch
+fix-fmt-check.patch
+fix-cephadm-build.patch
+fix-qat-build.patch
+ppc64el-fix-linking.patch
