@@ -1,15 +1,14 @@
 import { Component, OnInit } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-
-import { RgwDaemonService } from '../../../shared/api/rgw-daemon.service';
-import { RgwSiteService } from '../../../shared/api/rgw-site.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableFetchDataContext } from '../../../shared/models/cd-table-fetch-data-context';
-import { Permission } from '../../../shared/models/permissions';
-import { CephShortVersionPipe } from '../../../shared/pipes/ceph-short-version.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { RgwDaemon } from '~/app/ceph/rgw/models/rgw-daemon';
+import { RgwDaemonService } from '~/app/shared/api/rgw-daemon.service';
+import { RgwSiteService } from '~/app/shared/api/rgw-site.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { Permission } from '~/app/shared/models/permissions';
+import { CephShortVersionPipe } from '~/app/shared/pipes/ceph-short-version.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 
 @Component({
   selector: 'cd-rgw-daemon-list',
@@ -18,7 +17,7 @@ import { AuthStorageService } from '../../../shared/services/auth-storage.servic
 })
 export class RgwDaemonListComponent extends ListWithDetails implements OnInit {
   columns: CdTableColumn[] = [];
-  daemons: object[] = [];
+  daemons: RgwDaemon[] = [];
   grafanaPermission: Permission;
   isMultiSite: boolean;
 
@@ -26,7 +25,6 @@ export class RgwDaemonListComponent extends ListWithDetails implements OnInit {
     private rgwDaemonService: RgwDaemonService,
     private authStorageService: AuthStorageService,
     private cephShortVersionPipe: CephShortVersionPipe,
-    private i18n: I18n,
     private rgwSiteService: RgwSiteService
   ) {
     super();
@@ -36,17 +34,37 @@ export class RgwDaemonListComponent extends ListWithDetails implements OnInit {
     this.grafanaPermission = this.authStorageService.getPermissions().grafana;
     this.columns = [
       {
-        name: this.i18n('ID'),
+        name: $localize`ID`,
         prop: 'id',
         flexGrow: 2
       },
       {
-        name: this.i18n('Hostname'),
+        name: $localize`Hostname`,
         prop: 'server_hostname',
         flexGrow: 2
       },
       {
-        name: this.i18n('Version'),
+        name: $localize`Port`,
+        prop: 'port',
+        flexGrow: 1
+      },
+      {
+        name: $localize`Realm`,
+        prop: 'realm_name',
+        flexGrow: 2
+      },
+      {
+        name: $localize`Zone Group`,
+        prop: 'zonegroup_name',
+        flexGrow: 2
+      },
+      {
+        name: $localize`Zone`,
+        prop: 'zone_name',
+        flexGrow: 2
+      },
+      {
+        name: $localize`Version`,
         prop: 'version',
         flexGrow: 1,
         pipe: this.cephShortVersionPipe
@@ -58,13 +76,12 @@ export class RgwDaemonListComponent extends ListWithDetails implements OnInit {
   }
 
   getDaemonList(context: CdTableFetchDataContext) {
-    this.rgwDaemonService.list().subscribe(
-      (resp: object[]) => {
-        this.daemons = resp;
-      },
-      () => {
-        context.error();
-      }
-    );
+    this.rgwDaemonService.list().subscribe(this.updateDaemons, () => {
+      context.error();
+    });
   }
+
+  private updateDaemons = (daemons: RgwDaemon[]) => {
+    this.daemons = daemons;
+  };
 }

@@ -23,8 +23,11 @@ export class DocService {
     });
   }
 
-  urlGenerator(release: string, section: string): string {
-    const domain = `http://docs.ceph.com/docs/${release}/`;
+  urlGenerator(section: string, release = 'main'): string {
+    const docVersion = release === 'main' ? 'latest' : release;
+    const domain = `https://docs.ceph.com/en/${docVersion}/`;
+    const domainCeph = `https://ceph.io`;
+    const domainCephOld = `https://old.ceph.com`;
 
     const sections = {
       iscsi: `${domain}mgr/dashboard/#enabling-iscsi-management`,
@@ -32,10 +35,18 @@ export class DocService {
       'nfs-ganesha': `${domain}mgr/dashboard/#configuring-nfs-ganesha-in-the-dashboard`,
       'rgw-nfs': `${domain}radosgw/nfs`,
       rgw: `${domain}mgr/dashboard/#enabling-the-object-gateway-management-frontend`,
+      'rgw-multisite': `${domain}/radosgw/multisite/#failover-and-disaster-recovery`,
+      multisite: `${domain}/radosgw/multisite`,
       dashboard: `${domain}mgr/dashboard`,
       grafana: `${domain}mgr/dashboard/#enabling-the-embedding-of-grafana-dashboards`,
       orch: `${domain}mgr/orchestrator`,
-      pgs: `http://ceph.com/pgcalc`
+      pgs: `${domainCephOld}/pgcalc`,
+      help: `${domainCeph}/en/users/`,
+      security: `${domainCeph}/en/security/`,
+      trademarks: `${domainCeph}/en/trademarks/`,
+      'dashboard-landing-page-status': `${domain}mgr/dashboard/#dashboard-landing-page-status`,
+      'dashboard-landing-page-performance': `${domain}mgr/dashboard/#dashboard-landing-page-performance`,
+      'dashboard-landing-page-capacity': `${domain}mgr/dashboard/#dashboard-landing-page-capacity`
     };
 
     return sections[section];
@@ -49,7 +60,7 @@ export class DocService {
     return this.releaseData$
       .pipe(
         filter((value) => !!value),
-        map((release) => this.urlGenerator(release, section)),
+        map((release) => this.urlGenerator(section, release)),
         first()
       )
       .subscribe(next, error);

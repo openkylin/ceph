@@ -14,11 +14,13 @@
 #ifndef CEPH_OBJECTSTORE_H
 #define CEPH_OBJECTSTORE_H
 
+#include "include/buffer.h"
 #include "include/common_fwd.h"
 #include "include/Context.h"
-#include "include/buffer.h"
-#include "include/types.h"
+#include "include/interval_set.h"
 #include "include/stringify.h"
+#include "include/types.h"
+
 #include "osd/osd_types.h"
 #include "common/TrackedOp.h"
 #include "common/WorkQueue.h"
@@ -27,10 +29,11 @@
 
 #include <errno.h>
 #include <sys/stat.h>
-#include <vector>
 #include <map>
+#include <memory>
+#include <vector>
 
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__sun)
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__sun) || defined(_WIN32)
 #include <sys/statvfs.h>
 #else
 #include <sys/vfs.h>    /* or <sys/statfs.h> */
@@ -75,11 +78,18 @@ public:
    * @param journal path (or other descriptor) for journal (optional)
    * @param flags which filestores should check if applicable
    */
-  static ObjectStore *create(CephContext *cct,
-			     const std::string& type,
-			     const std::string& data,
-			     const std::string& journal,
-			     osflagbits_t flags = 0);
+#ifndef WITH_SEASTAR
+  static std::unique_ptr<ObjectStore> create(
+    CephContext *cct,
+    const std::string& type,
+    const std::string& data,
+    const std::string& journal,
+    osflagbits_t flags = 0);
+#endif
+  static std::unique_ptr<ObjectStore> create(
+    CephContext *cct,
+    const std::string& type,
+    const std::string& data);
 
   /**
    * probe a block device to learn the uuid of the owning OSD
@@ -101,6 +111,13 @@ public:
    * This appears to be called with nothing locked.
    */
   virtual objectstore_perf_stat_t get_cur_stats() = 0;
+  /**
+   * Propagate Object Store performance counters with the actual values
+   *
+   *
+   * Intended primarily for testing purposes
+   */
+  virtual void refresh_perf_counters() = 0;
 
   /**
    * Fetch Object Store performance counters.
@@ -278,7 +295,8 @@ public:
   virtual bool needs_journal() = 0;  //< requires a journal
   virtual bool wants_journal() = 0;  //< prefers a journal
   virtual bool allows_journal() = 0; //< allows a journal
-
+  virtual void prepare_for_fast_shutdown() {}
+  virtual bool has_null_manager() const { return false; }
   // return store min allocation size, if applicable
   virtual uint64_t get_min_alloc_size() const {
     return 0;
@@ -342,7 +360,7 @@ public:
   virtual int pool_statfs(uint64_t pool_id, struct store_statfs_t *buf,
 			  bool *per_pool_omap) = 0;
 
-  virtual void collect_metadata(std::map<std::string,string> *pm) { }
+  virtual void collect_metadata(std::map<std::string,std::string> *pm) { }
 
   /**
    * write_meta - write a simple configuration key out-of-band
@@ -413,7 +431,7 @@ public:
    */
 
   /**
-   * exists -- Test for existance of object
+   * exists -- Test for existence of object
    *
    * @param cid collection for object
    * @param oid oid of object
@@ -514,7 +532,7 @@ public:
      uint32_t op_flags = 0) {
      int total = 0;
      for (auto p = m.begin(); p != m.end(); p++) {
-       bufferlist t;
+       ceph::buffer::list t;
        int r = read(c, oid, p.get_start(), p.get_len(), t, op_flags);
        if (r < 0)
          return r;
@@ -553,8 +571,8 @@ public:
   virtual int dump_onode(
     CollectionHandle &c,
     const ghobject_t& oid,
-    const string& section_name,
-    Formatter *f) {
+    const std::string& section_name,
+    ceph::Formatter *f) {
     return -ENOTSUP;
   }
 
@@ -597,7 +615,7 @@ public:
    * @returns 0 on success, negative error code on failure.
    */
   virtual int getattrs(CollectionHandle &c, const ghobject_t& oid,
-		       std::map<std::string,ceph::buffer::ptr>& aset) = 0;
+		       std::map<std::string,ceph::buffer::ptr, std::less<>>& aset) = 0;
 
   /**
    * getattrs -- get all of the xattrs of an object
@@ -608,8 +626,8 @@ public:
    * @returns 0 on success, negative error code on failure.
    */
   int getattrs(CollectionHandle &c, const ghobject_t& oid,
-	       std::map<std::string,ceph::buffer::list>& aset) {
-    std::map<std::string,ceph::buffer::ptr> bmap;
+	       std::map<std::string,ceph::buffer::list,std::less<>>& aset) {
+    std::map<std::string,ceph::buffer::ptr,std::less<>> bmap;
     int r = getattrs(c, oid, bmap);
     for (auto i = bmap.begin(); i != bmap.end(); ++i) {
       aset[i->first].append(i->second);

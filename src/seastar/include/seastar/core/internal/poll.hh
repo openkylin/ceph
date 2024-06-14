@@ -37,8 +37,63 @@ struct pollfn {
     // to return to normal polling.
     //
     // If it returns false, the sleeping idle loop may not be entered.
-    virtual bool try_enter_interrupt_mode() { return false; }
-    virtual void exit_interrupt_mode() {}
+    virtual bool try_enter_interrupt_mode() = 0;
+    virtual void exit_interrupt_mode() = 0;
 };
+
+// The common case for poller -- do not make any difference between
+// poll() and pure_poll(), always/never agree to go to sleep and do
+// nothing on wakeup.
+template <bool Passive>
+struct simple_pollfn : public pollfn {
+    virtual bool pure_poll() override final {
+        return poll();
+    }
+    virtual bool try_enter_interrupt_mode() override final {
+        return Passive;
+    }
+    virtual void exit_interrupt_mode() override final {
+    }
+};
+
+namespace internal {
+
+template <typename Func>
+SEASTAR_CONCEPT( requires std::is_invocable_r_v<bool, Func> )
+inline
+std::unique_ptr<seastar::pollfn> make_pollfn(Func&& func) {
+    struct the_pollfn : simple_pollfn<false> {
+        the_pollfn(Func&& func) : func(std::forward<Func>(func)) {}
+        Func func;
+        virtual bool poll() override final {
+            return func();
+        }
+    };
+    return std::make_unique<the_pollfn>(std::forward<Func>(func));
+}
+
+class poller {
+    std::unique_ptr<pollfn> _pollfn;
+    class registration_task;
+    class deregistration_task;
+    registration_task* _registration_task = nullptr;
+public:
+    template <typename Func>
+    SEASTAR_CONCEPT( requires std::is_invocable_r_v<bool, Func> )
+    static poller simple(Func&& poll) {
+        return poller(make_pollfn(std::forward<Func>(poll)));
+    }
+    poller(std::unique_ptr<pollfn> fn)
+            : _pollfn(std::move(fn)) {
+        do_register();
+    }
+    ~poller();
+    poller(poller&& x) noexcept;
+    poller& operator=(poller&& x) noexcept;
+    void do_register() noexcept;
+    friend class reactor;
+};
+
+} // internal namespace
 
 }

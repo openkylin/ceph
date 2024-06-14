@@ -1,5 +1,5 @@
 <cd-orchestrator-doc-panel *ngIf="showDocPanel"></cd-orchestrator-doc-panel>
-<ng-container *ngIf="hasOrchestrator">
+<ng-container *ngIf="orchStatus?.available">
   <cd-table [data]="services"
             [columns]="columns"
             identifier="service_name"
@@ -8,7 +8,9 @@
             selectionType="single"
             [autoReload]="5000"
             (fetchData)="getServices($event)"
-            [hasDetails]="true"
+            [hasDetails]="hasDetails"
+            [serverSide]="true"
+            [count]="count"
             (setExpandedRow)="setExpandedRow($event)"
             (updateSelection)="updateSelection($event)">
     <cd-table-actions class="table-actions"
@@ -22,3 +24,16 @@
     </cd-service-details>
   </cd-table>
 </ng-container>
+<router-outlet name="modal"></router-outlet>
+
+
+<ng-template #runningTpl
+             let-value="value">
+  <span ngbTooltip="Service instances running out of the total number of services requested.">
+    {{ value.running }} / {{ value.size }}
+  </span>
+  <i *ngIf="value.running == 0 || value.size == 0"
+     class="icon-warning-color"
+     [ngClass]="[icons.warning]">
+  </i>
+</ng-template>

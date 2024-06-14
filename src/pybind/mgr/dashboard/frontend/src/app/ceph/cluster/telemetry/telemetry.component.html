@@ -1,11 +1,5 @@
-<cd-loading-panel *ngIf="loading && !error"
-                  i18n>Loading configuration...</cd-loading-panel>
-<cd-alert-panel type="error"
-                *ngIf="loading && error"
-                i18n>The configuration could not be loaded.</cd-alert-panel>
-
 <div class="cd-col-form"
-     *ngIf="!loading && !error">
+     *cdFormLoading="loading">
   <ng-container [ngSwitch]="step">
     <!-- Configuration step -->
     <div *ngSwitchCase="1">
@@ -139,6 +133,28 @@
                 </div>
               </div>
             </div>
+
+            <!-- Channel perf -->
+            <div class="form-group row">
+              <label class="cd-col-form-label"
+                     for="channel_perf">
+                <ng-container i18n>Perf</ng-container>
+                <cd-helper>
+                  <ng-container i18n>Includes various performance metrics of a cluster.</ng-container>
+                </cd-helper>
+              </label>
+              <div class="cd-col-form-input">
+                <div class="custom-control custom-checkbox">
+                  <input type="checkbox"
+                         class="custom-control-input"
+                         id="channel_perf"
+                         formControlName="channel_perf">
+                  <label class="custom-control-label"
+                         for="channel_perf"></label>
+                </div>
+              </div>
+            </div>
+
             <ng-container *ngIf="showContactInfo">
             <legend>
               <ng-container i18n>Contact Information</ng-container>
@@ -195,7 +211,8 @@
                 <input id="interval"
                        class="form-control"
                        type="number"
-                       formControlName="interval">
+                       formControlName="interval"
+                       min="8">
                 <span class="invalid-feedback"
                       *ngIf="configForm.showError('interval', formDir, 'min')"
                       i18n>The entered value is too low! It must be greater or equal to 8.</span>
@@ -229,7 +246,7 @@
               <button type="button"
                       class="btn btn-light"
                       (click)="next()">
-                <ng-container i18n>Next</ng-container>
+                <ng-container>{{ actionLabels.NEXT }}</ng-container>
               </button>
             </div>
           </div>
@@ -254,7 +271,8 @@
                      class="cd-col-form-label">Report ID
               <cd-helper i18n-html
                          html="A randomized UUID to identify a particular cluster over the course of several telemetry reports.">
-              </cd-helper></label>
+              </cd-helper>
+              </label>
               <div class="cd-col-form-input">
                 <input class="form-control"
                        type="text"
@@ -270,8 +288,10 @@
                      for="report"
                      class="cd-col-form-label">Report preview
                 <cd-helper i18n-html
-                           html="The actual telemetry data that will be submitted.">
-                </cd-helper></label>
+                           html="The actual telemetry data that will be submitted."><em>Note: Please select 'Download' to
+                                   view the full report, including metrics from the perf channel.</em>
+                </cd-helper>
+              </label>
               <div class="cd-col-form-input">
                 <textarea class="form-control"
                           id="report"
@@ -282,17 +302,14 @@
             </div>
             <div class="form-group row">
               <div class="cd-col-form-offset">
-                <button type="button"
-                        class="btn btn-light mr-2"
-                        title="Download"
-                        (click)="download(report, 'telemetry_report.json')"
-                        i18n-title>
-                  <i class="fa fa-download"></i>
-                </button>
-                <button type="button"
-                        class="btn btn-light"
-                        cdCopy2ClipboardButton="report">
-                </button>
+                <div class="btn-group"
+                     role="group">
+                  <cd-download-button [objectItem]="report"
+                                      fileName="telemetry_report">
+                  </cd-download-button>
+                  <cd-copy-2-clipboard-button source="report">
+                  </cd-copy-2-clipboard-button>
+                </div>
               </div>
             </div>
 
@@ -307,21 +324,18 @@
                          formControlName="licenseAgrmt">
                   <label class="custom-control-label"
                          for="licenseAgrmt"
-                         i18n>I agree to my telemetry data being submitted under the Community Data License Agreement - Sharing - Version 1.0 (<a href="https://cdla.io/sharing-1-0/">https://cdla.io/sharing-1-0/</a>)</label>
+                         i18n>I agree to my telemetry data being submitted under the <a href="https://cdla.io/sharing-1-0/">Community Data License Agreement - Sharing - Version 1.0</a></label>
                 </div>
               </div>
             </div>
           </div>
           <div class="card-footer">
             <div class="button-group text-right">
-              <cd-submit-button (submitAction)="onSubmit()"
-                                [form]="previewForm">
-                <ng-container i18n>Save</ng-container>
-              </cd-submit-button>
-              <button type="button"
-                      class="btn btn-light"
-                      (click)="back()"
-                      i18n>Back</button>
+              <cd-form-button-panel (submitActionEvent)="onSubmit()"
+                                    (backActionEvent)="back()"
+                                    [form]="previewForm"
+                                    [submitText]="actionLabels.UPDATE"
+                                    [cancelText]="actionLabels.BACK"></cd-form-button-panel>
             </div>
           </div>
         </div>

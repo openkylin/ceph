@@ -21,26 +21,26 @@
 
 #pragma once
 
-#include <seastar/util/gcc6-concepts.hh>
+#include <seastar/util/concepts.hh>
 #include <seastar/util/std-compat.hh>
-
-#include <experimental/type_traits>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
 #include <iostream>
+#include <memory>
+#include <type_traits>
+#endif
 
 namespace seastar {
 
-namespace stdx = std::experimental;
-
-GCC6_CONCEPT(
+SEASTAR_CONCEPT(
 
 template<typename T>
-concept bool OptimizableOptional() {
-    return stdx::is_default_constructible_v<T>
-        && stdx::is_nothrow_move_assignable_v<T>
+concept OptimizableOptional =
+    std::is_default_constructible_v<T>
+        && std::is_nothrow_move_assignable_v<T>
         && requires(const T& obj) {
             { bool(obj) } noexcept;
         };
-}
 
 )
 
@@ -48,15 +48,16 @@ concept bool OptimizableOptional() {
 /// their data externally and expect pointer to this data to be always non-null.
 /// In such case there is no real need for another flag signifying whether
 /// the optional is engaged.
+SEASTAR_MODULE_EXPORT
 template<typename T>
 class optimized_optional {
     T _object;
 public:
     optimized_optional() = default;
-    optimized_optional(compat::nullopt_t) noexcept { }
+    optimized_optional(std::nullopt_t) noexcept { }
     optimized_optional(const T& obj) : _object(obj) { }
     optimized_optional(T&& obj) noexcept : _object(std::move(obj)) { }
-    optimized_optional(compat::optional<T>&& obj) noexcept {
+    optimized_optional(std::optional<T>&& obj) noexcept {
         if (obj) {
             _object = std::move(*obj);
         }
@@ -64,12 +65,12 @@ public:
     optimized_optional(const optimized_optional&) = default;
     optimized_optional(optimized_optional&&) = default;
 
-    optimized_optional& operator=(compat::nullopt_t) noexcept {
+    optimized_optional& operator=(std::nullopt_t) noexcept {
         _object = T();
         return *this;
     }
     template<typename U>
-    std::enable_if_t<std::is_same<std::decay_t<U>, T>::value, optimized_optional&>
+    std::enable_if_t<std::is_same_v<std::decay_t<U>, T>, optimized_optional&>
     operator=(U&& obj) noexcept {
         _object = std::forward<U>(obj);
         return *this;

@@ -17,10 +17,16 @@
 #include "common/ceph_context.h"
 #include "global/global_context.h"
 
-#define dout_context g_ceph_context
-#define dout_subsys ceph_subsys_rgw
 
 #define GC_LIST_DEFAULT_MAX 128
+
+using std::string;
+
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::make_timespan;
+using ceph::real_time;
 
 CLS_VER(1,0)
 CLS_NAME(rgw_gc)
@@ -32,7 +38,7 @@ static int cls_rgw_gc_queue_init(cls_method_context_t hctx, bufferlist *in, buff
   cls_rgw_gc_queue_init_op op;
   try {
     decode(op, in_iter);
-  } catch (buffer::error& err) {
+  } catch (ceph::buffer::error& err) {
     CLS_LOG(5, "ERROR: cls_rgw_gc_queue_init: failed to decode entry\n");
     return -EINVAL;
   }
@@ -57,7 +63,7 @@ static int cls_rgw_gc_queue_enqueue(cls_method_context_t hctx, bufferlist *in, b
   cls_rgw_gc_set_entry_op op;
   try {
     decode(op, in_iter);
-  } catch (buffer::error& err) {
+  } catch (ceph::buffer::error& err) {
     CLS_LOG(1, "ERROR: cls_rgw_gc_queue_enqueue: failed to decode entry\n");
     return -EINVAL;
   }
@@ -94,7 +100,7 @@ static int cls_rgw_gc_queue_list_entries(cls_method_context_t hctx, bufferlist *
   cls_rgw_gc_list_op op;
   try {
     decode(op, in_iter);
-  } catch (buffer::error& err) {
+  } catch (ceph::buffer::error& err) {
     CLS_LOG(5, "ERROR: cls_rgw_gc_queue_list_entries(): failed to decode input\n");
     return -EINVAL;
   }
@@ -110,7 +116,7 @@ static int cls_rgw_gc_queue_list_entries(cls_method_context_t hctx, bufferlist *
     auto iter_urgent_data = head.bl_urgent_data.cbegin();
     try {
       decode(urgent_data, iter_urgent_data);
-    } catch (buffer::error& err) {
+    } catch (ceph::buffer::error& err) {
       CLS_LOG(5, "ERROR: cls_rgw_gc_queue_list_entries(): failed to decode urgent data\n");
       return -EINVAL;
     }
@@ -143,7 +149,7 @@ static int cls_rgw_gc_queue_list_entries(cls_method_context_t hctx, bufferlist *
         cls_rgw_gc_obj_info info;
         try {
           decode(info, it.data);
-        } catch (buffer::error& err) {
+        } catch (ceph::buffer::error& err) {
           CLS_LOG(5, "ERROR: cls_rgw_gc_queue_list_entries(): failed to decode gc info\n");
           return -EINVAL;
         }
@@ -170,7 +176,7 @@ static int cls_rgw_gc_queue_list_entries(cls_method_context_t hctx, bufferlist *
             auto iter = bl_xattrs.cbegin();
             try {
               decode(xattr_urgent_data_map, iter);
-            } catch (buffer::error& err) {
+            } catch (ceph::buffer::error& err) {
               CLS_LOG(1, "ERROR: cls_rgw_gc_queue_list_entries(): failed to decode xattrs urgent data map\n");
               return -EINVAL;
             } //end - catch
@@ -225,7 +231,7 @@ static int cls_rgw_gc_queue_remove_entries(cls_method_context_t hctx, bufferlist
   cls_rgw_gc_queue_remove_entries_op op;
   try {
     decode(op, in_iter);
-  } catch (buffer::error& err) {
+  } catch (ceph::buffer::error& err) {
     CLS_LOG(5, "ERROR: cls_rgw_gc_queue_remove_entries(): failed to decode input\n");
     return -EINVAL;
   }
@@ -241,7 +247,7 @@ static int cls_rgw_gc_queue_remove_entries(cls_method_context_t hctx, bufferlist
     auto iter_urgent_data = head.bl_urgent_data.cbegin();
     try {
       decode(urgent_data, iter_urgent_data);
-    } catch (buffer::error& err) {
+    } catch (ceph::buffer::error& err) {
       CLS_LOG(5, "ERROR: cls_rgw_gc_queue_remove_entries(): failed to decode urgent data\n");
       return -EINVAL;
     }
@@ -272,7 +278,7 @@ static int cls_rgw_gc_queue_remove_entries(cls_method_context_t hctx, bufferlist
         cls_rgw_gc_obj_info info;
         try {
           decode(info, it.data);
-        } catch (buffer::error& err) {
+        } catch (ceph::buffer::error& err) {
           CLS_LOG(5, "ERROR: cls_rgw_gc_queue_remove_entries(): failed to decode gc info\n");
           return -EINVAL;
         }
@@ -306,7 +312,7 @@ static int cls_rgw_gc_queue_remove_entries(cls_method_context_t hctx, bufferlist
             auto iter = bl_xattrs.cbegin();
             try {
               decode(xattr_urgent_data_map, iter);
-            } catch (buffer::error& err) {
+            } catch (ceph::buffer::error& err) {
               CLS_LOG(5, "ERROR: cls_rgw_gc_queue_remove_entries(): failed to decode xattrs urgent data map\n");
               return -EINVAL;
             } //end - catch
@@ -376,7 +382,7 @@ static int cls_rgw_gc_queue_update_entry(cls_method_context_t hctx, bufferlist *
   cls_rgw_gc_queue_defer_entry_op op;
   try {
     decode(op, in_iter);
-  } catch (buffer::error& err) {
+  } catch (ceph::buffer::error& err) {
     CLS_LOG(5, "ERROR: cls_rgw_gc_queue_update_entry(): failed to decode input\n");
     return -EINVAL;
   }
@@ -395,7 +401,7 @@ static int cls_rgw_gc_queue_update_entry(cls_method_context_t hctx, bufferlist *
   cls_rgw_gc_urgent_data urgent_data;
   try {
     decode(urgent_data, bl_iter);
-  } catch (buffer::error& err) {
+  } catch (ceph::buffer::error& err) {
     CLS_LOG(5, "ERROR: cls_rgw_gc_queue_update_entry(): failed to decode urgent data\n");
     return -EINVAL;
   }
@@ -420,7 +426,7 @@ static int cls_rgw_gc_queue_update_entry(cls_method_context_t hctx, bufferlist *
       auto iter = bl_xattrs.cbegin();
       try {
         decode(xattr_urgent_data_map, iter);
-      } catch (buffer::error& err) {
+      } catch (ceph::buffer::error& err) {
         CLS_LOG(1, "ERROR: cls_rgw_gc_queue_update_entry(): failed to decode xattrs urgent data map\n");
         return -EINVAL;
       } //end - catch
@@ -467,7 +473,7 @@ static int cls_rgw_gc_queue_update_entry(cls_method_context_t hctx, bufferlist *
         auto iter = bl_xattrs.cbegin();
         try {
           decode(xattr_urgent_data_map, iter);
-        } catch (buffer::error& err) {
+        } catch (ceph::buffer::error& err) {
           CLS_LOG(1, "ERROR: cls_rgw_gc_queue_remove_entries(): failed to decode xattrs urgent data map\n");
           return -EINVAL;
         } //end - catch

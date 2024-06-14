@@ -8,6 +8,8 @@ dentries by issuing a remount of itself. CephFS can be mounted
 advantages. Read the following section to understand more about both of
 these ways to mount CephFS.
 
+For Windows CephFS mounts, please check the `ceph-dokan`_ page.
+
 Which CephFS Client?
 --------------------
 
@@ -70,3 +72,4 @@ Ceph MON resides.
 .. _cephfs-shell: ../cephfs-shell
 .. _using kernel: ../mount-using-kernel-driver
 .. _using FUSE: ../mount-using-fuse
+.. _ceph-dokan: ../ceph-dokan

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <ostream>
 #include <string>
 
@@ -54,14 +55,15 @@ struct OptionMask {
     }
     return r;
   }
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
 };
 
 struct MaskedOption {
-  string raw_value;               ///< raw, unparsed, unvalidated value
+  std::string raw_value;               ///< raw, unparsed, unvalidated value
   const Option *opt;              ///< the option
   OptionMask mask;
-  unique_ptr<const Option> unknown_opt; ///< if fabricated for an unknown option
+  std::unique_ptr<const Option> unknown_opt; ///< if fabricated for an unknown option
+  std::string localized_name;     ///< localized name for the option
 
   MaskedOption(const Option *o, bool fab=false) : opt(o) {
     if (fab) {
@@ -73,6 +75,7 @@ struct MaskedOption {
     opt = o.opt;
     mask = std::move(o.mask);
     unknown_opt = std::move(o.unknown_opt);
+    localized_name = std::move(o.localized_name);
   }
   const MaskedOption& operator=(const MaskedOption& o) = delete;
   const MaskedOption& operator=(MaskedOption&& o) = delete;
@@ -80,9 +83,9 @@ struct MaskedOption {
   /// return a precision metric (smaller is more precise)
   int get_precision(const CrushWrapper *crush);
 
-  friend ostream& operator<<(ostream& out, const MaskedOption& o);
+  friend std::ostream& operator<<(std::ostream& out, const MaskedOption& o);
 
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
 };
 
 struct Section {
@@ -91,14 +94,22 @@ struct Section {
   void clear() {
     options.clear();
   }
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
   std::string get_minimal_conf() const;
 };
 
 struct ConfigMap {
+  struct ValueSource {
+    std::string section;
+    const MaskedOption *option = nullptr;
+    ValueSource() {}
+    ValueSource(const std::string& s, const MaskedOption *o)
+      : section(s), option(o) {}
+  };
+
   Section global;
-  std::map<std::string,Section> by_type;
-  std::map<std::string,Section> by_id;
+  std::map<std::string,Section, std::less<>> by_type;
+  std::map<std::string,Section, std::less<>> by_id;
   std::list<std::unique_ptr<Option>> stray_options;
 
   Section *find_section(const std::string& name) {
@@ -121,29 +132,41 @@ struct ConfigMap {
     by_id.clear();
     stray_options.clear();
   }
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
+
   std::map<std::string,std::string,std::less<>> generate_entity_map(
     const EntityName& name,
-    const map<std::string,std::string>& crush_location,
+    const std::map<std::string,std::string>& crush_location,
     const CrushWrapper *crush,
     const std::string& device_class,
-    std::map<std::string,pair<std::string,const MaskedOption*>> *src=0);
+    std::unordered_map<std::string,ValueSource> *src = nullptr);
 
+  void parse_key(
+    const std::string& key,
+    std::string *name,
+    std::string *who);
   static bool parse_mask(
     const std::string& in,
     std::string *section,
     OptionMask *mask);
+
+  int add_option(
+    CephContext *cct,
+    const std::string& name,
+    const std::string& who,
+    const std::string& value,
+    std::function<const Option *(const std::string&)> get_opt);
 };
 
 
 struct ConfigChangeSet {
   version_t version;
   utime_t stamp;
-  string name;
+  std::string name;
 
   // key -> (old value, new value)
-  map<string,pair<boost::optional<string>,boost::optional<string>>> diff;
+  std::map<std::string,std::pair<std::optional<std::string>,std::optional<std::string>>> diff;
 
-  void dump(Formatter *f) const;
-  void print(ostream& out) const;
+  void dump(ceph::Formatter *f) const;
+  void print(std::ostream& out) const;
 };

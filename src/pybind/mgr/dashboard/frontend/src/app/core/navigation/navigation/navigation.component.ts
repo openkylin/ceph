@@ -3,17 +3,17 @@ import { Component, HostBinding, OnDestroy, OnInit } from '@angular/core';
 import * as _ from 'lodash';
 import { Subscription } from 'rxjs';
 
-import { Icons } from '../../../shared/enum/icons.enum';
-import { Permissions } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { Permissions } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import {
   FeatureTogglesMap$,
   FeatureTogglesService
-} from '../../../shared/services/feature-toggles.service';
-import { MotdNotificationService } from '../../../shared/services/motd-notification.service';
-import { PrometheusAlertService } from '../../../shared/services/prometheus-alert.service';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { TelemetryNotificationService } from '../../../shared/services/telemetry-notification.service';
+} from '~/app/shared/services/feature-toggles.service';
+import { MotdNotificationService } from '~/app/shared/services/motd-notification.service';
+import { PrometheusAlertService } from '~/app/shared/services/prometheus-alert.service';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { TelemetryNotificationService } from '~/app/shared/services/telemetry-notification.service';
 
 @Component({
   selector: 'cd-navigation',
@@ -33,11 +33,11 @@ export class NavigationComponent implements OnInit, OnDestroy {
 
   rightSidebarOpen = false; // rightSidebar only opens when width is less than 768px
   showMenuSidebar = true;
-  displayedSubMenu = '';
 
   simplebar = {
     autoHide: false
   };
+  displayedSubMenu = {};
   private subs = new Subscription();
 
   constructor(
@@ -87,7 +87,7 @@ export class NavigationComponent implements OnInit, OnDestroy {
   blockHealthColor() {
     if (this.summaryData && this.summaryData.rbd_mirroring) {
       if (this.summaryData.rbd_mirroring.errors > 0) {
-        return { color: '#d9534f' };
+        return { color: '#f4926c' };
       } else if (this.summaryData.rbd_mirroring.warnings > 0) {
         return { color: '#f0ad4e' };
       }
@@ -97,11 +97,7 @@ export class NavigationComponent implements OnInit, OnDestroy {
   }
 
   toggleSubMenu(menu: string) {
-    if (this.displayedSubMenu === menu) {
-      this.displayedSubMenu = '';
-    } else {
-      this.displayedSubMenu = menu;
-    }
+    this.displayedSubMenu[menu] = !this.displayedSubMenu[menu];
   }
 
   toggleRightSidebar() {

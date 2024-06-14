@@ -33,42 +33,47 @@
 // transfer_pass1() simply moves the objects and destroys the source, and
 // transfer_pass2() does nothing.
 
+#ifndef SEASTAR_MODULE
+#include <memory>
 #include <type_traits>
 #include <utility>
+#include <seastar/util/modules.hh>
+#endif
 
 namespace seastar {
+SEASTAR_MODULE_EXPORT_BEGIN
 
 template <typename T, typename Alloc>
 inline
 void
 transfer_pass1(Alloc& a, T* from, T* to,
-        typename std::enable_if<std::is_nothrow_move_constructible<T>::value>::type* = nullptr) {
-    a.construct(to, std::move(*from));
-    a.destroy(from);
+        std::enable_if_t<std::is_nothrow_move_constructible_v<T>>* = nullptr) {
+    std::allocator_traits<Alloc>::construct(a, to, std::move(*from));
+    std::allocator_traits<Alloc>::destroy(a, from);
 }
 
 template <typename T, typename Alloc>
 inline
 void
-transfer_pass2(Alloc& a, T* from, T* to,
-        typename std::enable_if<std::is_nothrow_move_constructible<T>::value>::type* = nullptr) {
+transfer_pass2(Alloc&, T*, T*,
+        std::enable_if_t<std::is_nothrow_move_constructible_v<T>>* = nullptr) {
 }
 
 template <typename T, typename Alloc>
 inline
 void
 transfer_pass1(Alloc& a, T* from, T* to,
-        typename std::enable_if<!std::is_nothrow_move_constructible<T>::value>::type* = nullptr) {
-    a.construct(to, *from);
+        std::enable_if_t<!std::is_nothrow_move_constructible_v<T>>* = nullptr) {
+    std::allocator_traits<Alloc>::construct(a, to, *from);
 }
 
 template <typename T, typename Alloc>
 inline
 void
-transfer_pass2(Alloc& a, T* from, T* to,
-        typename std::enable_if<!std::is_nothrow_move_constructible<T>::value>::type* = nullptr) {
-    a.destroy(from);
+transfer_pass2(Alloc& a, T* from, T*,
+        std::enable_if_t<!std::is_nothrow_move_constructible_v<T>>* = nullptr) {
+    std::allocator_traits<Alloc>::destroy(a, from);
 }
-
+SEASTAR_MODULE_EXPORT_END
 }
 

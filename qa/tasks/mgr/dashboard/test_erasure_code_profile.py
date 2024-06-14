@@ -2,9 +2,7 @@
 
 from __future__ import absolute_import
 
-import six
-
-from .helper import DashboardTestCase, JObj, JList
+from .helper import DashboardTestCase, JList, JObj
 
 
 class ECPTest(DashboardTestCase):
@@ -51,7 +49,6 @@ class ECPTest(DashboardTestCase):
             get_data = self._get('/api/erasure_code_profile/default')
             self.assertEqual(get_data, default[0])
 
-
     def test_create(self):
         data = {'name': 'ecp32', 'k': 3, 'm': 2}
         self._post('/api/erasure_code_profile', data)
@@ -82,7 +79,7 @@ class ECPTest(DashboardTestCase):
         self.assertStatus(201)
 
         self._get('/api/erasure_code_profile/lrc')
-        self.assertJsonBody({
+        self.assertJsonSubset({
             'crush-device-class': '',
             'crush-failure-domain': 'host',
             'crush-root': 'default',
@@ -101,9 +98,8 @@ class ECPTest(DashboardTestCase):
     def test_ecp_info(self):
         self._get('/ui-api/erasure_code_profile/info')
         self.assertSchemaBody(JObj({
-            'names': JList(six.string_types),
-            'plugins': JList(six.string_types),
-            'directory': six.string_types,
+            'names': JList(str),
+            'plugins': JList(str),
+            'directory': str,
             'nodes': JList(JObj({}, allow_unknown=True))
         }))
-

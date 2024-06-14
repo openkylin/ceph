@@ -1,6 +1,5 @@
 libradosstriper.so.1 libradosstriper1 #MINVER#
  (regex|c++)"^_.*" 0.87
- default_file_layout@Base 10.1.0
  rados_striper_aio_append@Base 0.87
  rados_striper_aio_flush@Base 0.87
  rados_striper_aio_read@Base 0.87

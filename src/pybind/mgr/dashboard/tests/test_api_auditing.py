@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
-import re
 import json
+import re
 
 try:
     import mock
 except ImportError:
     import unittest.mock as mock
 
-from . import ControllerTestCase, KVStoreMockMixin  # pylint: disable=no-name-in-module
-from ..controllers import RESTController, Controller
 from .. import mgr
+from ..controllers import RESTController, Router
+from ..tests import ControllerTestCase, KVStoreMockMixin
 
 
 # pylint: disable=W0613
-@Controller('/foo', secure=False)
+@Router('/foo', secure=False)
 class FooResource(RESTController):
     def create(self, password):
         pass

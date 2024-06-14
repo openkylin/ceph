@@ -21,16 +21,22 @@
  */
 
 #include <thread>
+#include <iostream>
 
 #include <seastar/testing/entry_point.hh>
 #include <seastar/testing/seastar_test.hh>
 #include <seastar/testing/test_runner.hh>
 #include <seastar/core/future.hh>
+#include <seastar/core/on_internal_error.hh>
 #include <seastar/core/app-template.hh>
+#include <seastar/testing/on_internal_error.hh>
 
 namespace seastar {
 
 namespace testing {
+
+exchanger_base::exchanger_base() { }
+exchanger_base::~exchanger_base() { }
 
 void seastar_test::run() {
     // HACK: please see https://github.com/cloudius-systems/seastar/issues/10
@@ -39,30 +45,65 @@ void seastar_test::run() {
     // HACK: please see https://github.com/cloudius-systems/seastar/issues/10
     boost::program_options::variables_map()["dummy"];
 
+    set_abort_on_internal_error(true);
+
     global_test_runner().run_sync([this] {
         return run_test_case();
     });
 }
 
-// We store a pointer because tests are registered from dynamic initializers,
-// so we must ensure that 'tests' is initialized before any dynamic initializer.
-// I use a primitive type, which is guaranteed to be initialized before any
-// dynamic initializer and lazily allocate the factor.
+seastar_test::seastar_test(const char* test_name, const char* test_file, int test_line)
+    : seastar_test(test_name, test_file, test_line, boost::unit_test::decorator::collector_t::instance()) {}
 
-static std::vector<seastar_test*>* tests = nullptr;
-
-const std::vector<seastar_test*>& known_tests() {
-    if (!tests) {
-        throw std::runtime_error("No tests registered");
-    }
-    return *tests;
+seastar_test::seastar_test(const char* test_name, const char* test_file, int test_line,
+                           boost::unit_test::decorator::collector_t& decorators)
+    : _test_file{test_file} {
+    auto test = boost::unit_test::make_test_case([this] { run(); }, test_name, test_file, test_line);
+    decorators.store_in(*test);
+    decorators.reset();
+    boost::unit_test::framework::current_auto_test_suite().add(test);
 }
 
-seastar_test::seastar_test() {
-    if (!tests) {
-        tests = new std::vector<seastar_test*>();
-    }
-    tests->push_back(this);
+const std::string& seastar_test::get_name() {
+    const auto& current_test = boost::unit_test::framework::current_test_unit();
+    return current_test.p_name.get();
+}
+
+namespace exception_predicate {
+
+std::function<bool(const std::exception&)> message_equals(std::string_view expected_message) {
+    return [expected_message] (const std::exception& e) {
+        std::string error = e.what();
+        if (error == expected_message) {
+            return true;
+        } else {
+            std::cerr << "Expected \"" << expected_message << "\" but got \"" << error << '"' << std::endl;
+            return false;
+        }
+    };
+}
+
+std::function<bool(const std::exception&)> message_contains(std::string_view expected_message) {
+    return [expected_message] (const std::exception& e) {
+        std::string error = e.what();
+        if (error.find(expected_message.data()) != std::string::npos) {
+            return true;
+        } else {
+            std::cerr << "Expected \"" << expected_message << "\" but got \"" << error << '"' << std::endl;
+            return false;
+        }
+    };
+}
+
+} // exception_predicate
+
+scoped_no_abort_on_internal_error::scoped_no_abort_on_internal_error() noexcept
+    : _prev(set_abort_on_internal_error(false))
+{
+}
+
+scoped_no_abort_on_internal_error::~scoped_no_abort_on_internal_error() {
+    set_abort_on_internal_error(_prev);
 }
 
 }

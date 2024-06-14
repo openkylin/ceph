@@ -214,6 +214,25 @@ namespace librbd {
     config_source_t source;
   } config_option_t;
 
+  typedef rbd_encryption_format_t encryption_format_t;
+  typedef rbd_encryption_algorithm_t encryption_algorithm_t;
+  typedef rbd_encryption_options_t encryption_options_t;
+  typedef rbd_encryption_spec_t encryption_spec_t;
+
+  typedef struct {
+    encryption_algorithm_t alg;
+    std::string passphrase;
+  } encryption_luks1_format_options_t;
+
+  typedef struct {
+    encryption_algorithm_t alg;
+    std::string passphrase;
+  } encryption_luks2_format_options_t;
+
+  typedef struct {
+    std::string passphrase;
+  } encryption_luks_format_options_t;
+
 class CEPH_RBD_API RBD
 {
 public:
@@ -294,6 +313,8 @@ public:
   int migration_prepare(IoCtx& io_ctx, const char *image_name,
                         IoCtx& dest_io_ctx, const char *dest_image_name,
                         ImageOptions& opts);
+  int migration_prepare_import(const char *source_spec, IoCtx& dest_io_ctx,
+                               const char *dest_image_name, ImageOptions& opts);
   int migration_execute(IoCtx& io_ctx, const char *image_name);
   int migration_execute_with_progress(IoCtx& io_ctx, const char *image_name,
                                       ProgressContext &prog_ctx);
@@ -404,6 +425,8 @@ public:
 
   int group_snap_create(IoCtx& io_ctx, const char *group_name,
 			const char *snap_name);
+  int group_snap_create2(IoCtx& io_ctx, const char *group_name,
+                         const char *snap_name, uint32_t flags);
   int group_snap_remove(IoCtx& io_ctx, const char *group_name,
 			const char *snap_name);
   int group_snap_rename(IoCtx& group_ioctx, const char *group_name,
@@ -489,6 +512,20 @@ public:
   virtual void handle_notify() = 0;
 };
 
+class CEPH_RBD_API QuiesceWatchCtx {
+public:
+  virtual ~QuiesceWatchCtx() {}
+  /**
+   * Callback activated when we want to quiesce.
+   */
+  virtual void handle_quiesce() = 0;
+
+  /**
+   * Callback activated when we want to unquiesce.
+   */
+  virtual void handle_unquiesce() = 0;
+};
+
 class CEPH_RBD_API Image
 {
 public:
@@ -513,6 +550,8 @@ public:
                    std::string *parent_id, std::string *parent_snapname)
       CEPH_RBD_DEPRECATED;
   int get_parent(linked_image_spec_t *parent_image, snap_spec_t *parent_snap);
+
+  int get_migration_source_spec(std::string* source_spec);
 
   int old_format(uint8_t *old);
   int size(uint64_t *size);
@@ -556,6 +595,13 @@ public:
   int deep_copy_with_progress(IoCtx& dest_io_ctx, const char *destname,
                               ImageOptions& opts, ProgressContext &prog_ctx);
 
+  /* encryption */
+  int encryption_format(encryption_format_t format, encryption_options_t opts,
+                        size_t opts_size);
+  int encryption_load(encryption_format_t format, encryption_options_t opts,
+                      size_t opts_size);
+  int encryption_load2(const encryption_spec_t *specs, size_t spec_count);
+
   /* striping */
   uint64_t get_stripe_unit() const;
   uint64_t get_stripe_count() const;
@@ -598,6 +644,7 @@ public:
   bool snap_exists(const char *snapname) CEPH_RBD_DEPRECATED;
   int snap_exists2(const char *snapname, bool *exists);
   int snap_create(const char *snapname);
+  int snap_create2(const char *snapname, uint32_t flags, ProgressContext& pctx);
   int snap_remove(const char *snapname);
   int snap_remove2(const char *snapname, uint32_t flags, ProgressContext& pctx);
   int snap_remove_by_id(uint64_t snap_id);
@@ -669,6 +716,27 @@ public:
   ssize_t writesame(uint64_t ofs, size_t len, ceph::bufferlist &bl, int op_flags);
   ssize_t write_zeroes(uint64_t ofs, size_t len, int zero_flags, int op_flags);
 
+  /**
+   * compare and write from/to image
+   *
+   * Compare data in compare bufferlist to data at offset in image.
+   * len bytes of the compare bufferlist are compared, i.e. the compare
+   * bufferlist has to be at least len bytes long.
+   * If the compare is successful len bytes from the write bufferlist
+   * are written to the image, i.e. the write bufferlist also has to be
+   * at least len bytes long.
+   * If the compare is unsuccessful no data is written and the
+   * offset in the bufferlist where the compare first differed
+   * is returned through mismatch_off.
+   *
+   * @param off offset in image
+   * @param len length of compare, length of write
+   * @param cmp_bl bufferlist to compare from
+   * @param bl bufferlist to write to image if compare succeeds
+   * @param c aio completion to notify when compare and write is complete
+   * @param mismatch_off (out) offset in bufferlist where compare first differed
+   * @param op_flags see librados.h constants beginning with LIBRADOS_OP_FLAG
+   */
   ssize_t compare_and_write(uint64_t ofs, size_t len, ceph::bufferlist &cmp_bl,
                             ceph::bufferlist& bl, uint64_t *mismatch_off, int op_flags);
 
@@ -745,6 +813,7 @@ public:
   int mirror_image_demote();
   int mirror_image_resync();
   int mirror_image_create_snapshot(uint64_t *snap_id);
+  int mirror_image_create_snapshot2(uint32_t flags, uint64_t *snap_id);
   int mirror_image_get_info(mirror_image_info_t *mirror_image_info,
                             size_t info_size);
   int mirror_image_get_mode(mirror_image_mode_t *mode);
@@ -777,6 +846,10 @@ public:
   int list_watchers(std::list<image_watcher_t> &watchers);
 
   int config_list(std::vector<config_option_t> *options);
+
+  int quiesce_watch(QuiesceWatchCtx *ctx, uint64_t *handle);
+  int quiesce_unwatch(uint64_t handle);
+  void quiesce_complete(uint64_t handle, int r);
 
 private:
   friend class RBD;

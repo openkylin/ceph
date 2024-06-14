@@ -19,19 +19,33 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
-#include <seastar/core/reactor.hh>
-#include <seastar/core/print.hh>
-#include <seastar/net/packet.hh>
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
 #include <iostream>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <functional>
+#include <memory>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/core/print.hh>
+#include <seastar/core/smp.hh>
+#include <seastar/net/packet.hh>
+#endif
 
 namespace seastar {
 
+static_assert(std::is_nothrow_constructible_v<deleter>);
+static_assert(std::is_nothrow_move_constructible_v<deleter>);
+
 namespace net {
 
-constexpr size_t packet::internal_data_size;
-constexpr size_t packet::default_nr_frags;
+static_assert(std::is_nothrow_move_constructible_v<packet>);
 
 void packet::linearize(size_t at_frag, size_t desired_size) {
     _impl->unuse_internal_data();

@@ -24,14 +24,19 @@
 #include "mon/PaxosService.h"
 #include "mon/MonitorDBStore.h"
 
-struct MAuth;
+class MAuth;
 class KeyRing;
 class Monitor;
 
 #define MIN_GLOBAL_ID 0x1000
 
 class AuthMonitor : public PaxosService {
+
 public:
+  typedef enum {
+    CAPS_UPDATE_NOT_REQD, CAPS_UPDATE_REQD, CAPS_PARSING_ERR
+  } caps_update;
+
   enum IncType {
     GLOBAL_ID,
     AUTH_DATA,
@@ -40,11 +45,11 @@ public:
     IncType inc_type;
     uint64_t max_global_id;
     uint32_t auth_type;
-    bufferlist auth_data;
+    ceph::buffer::list auth_data;
 
     Incremental() : inc_type(GLOBAL_ID), max_global_id(0), auth_type(0) {}
 
-    void encode(bufferlist& bl, uint64_t features=-1) const {
+    void encode(ceph::buffer::list& bl, uint64_t features=-1) const {
       using ceph::encode;
       ENCODE_START(2, 2, bl);
       __u32 _type = (__u32)inc_type;
@@ -57,7 +62,7 @@ public:
       }
       ENCODE_FINISH(bl);
     }
-    void decode(bufferlist::const_iterator& bl) {
+    void decode(ceph::buffer::list::const_iterator& bl) {
       DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, bl);
       __u32 _type;
       decode(_type, bl);
@@ -71,13 +76,13 @@ public:
       }
       DECODE_FINISH(bl);
     }
-    void dump(Formatter *f) const {
+    void dump(ceph::Formatter *f) const {
       f->dump_int("type", inc_type);
       f->dump_int("max_global_id", max_global_id);
       f->dump_int("auth_type", auth_type);
       f->dump_int("auth_data_len", auth_data.length());
     }
-    static void generate_test_instances(list<Incremental*>& ls) {
+    static void generate_test_instances(std::list<Incremental*>& ls) {
       ls.push_back(new Incremental);
       ls.push_back(new Incremental);
       ls.back()->inc_type = GLOBAL_ID;
@@ -96,8 +101,7 @@ public:
 
 
 private:
-  vector<Incremental> pending_auth;
-  version_t last_rotating_ver;
+  std::vector<Incremental> pending_auth;
   uint64_t max_global_id;
   uint64_t last_allocated_id;
 
@@ -120,20 +124,26 @@ private:
     pending_auth.push_back(inc);
   }
 
-  /* validate mon/osd/mds caps; fail on unrecognized service/type */
-  bool valid_caps(const string& type, const string& caps, ostream *out);
-  bool valid_caps(const string& type, const bufferlist& bl, ostream *out) {
+  template<typename CAP_ENTITY_CLASS>
+  bool _was_parsing_fine(const std::string& entity, const std::string& caps,
+    std::ostream* out);
+  /* validate mon/osd/mgr/mds caps; fail on unrecognized service/type */
+  bool valid_caps(const std::string& entity, const std::string& caps,
+		  std::ostream *out);
+  bool valid_caps(const std::string& type, const ceph::buffer::list& bl, std::ostream *out) {
     auto p = bl.begin();
-    string v;
+    std::string v;
     try {
+      using ceph::decode;
       decode(v, p);
-    } catch (buffer::error& e) {
+    } catch (ceph::buffer::error& e) {
       *out << "corrupt capability encoding";
       return false;
     }
     return valid_caps(type, v, out);
   }
-  bool valid_caps(const vector<string>& caps, ostream *out);
+  bool valid_caps(const std::map<std::string, std::string>& caps,
+		  std::ostream *out);
 
   void on_active() override;
   bool should_propose(double& delay) override;
@@ -151,6 +161,8 @@ public:
   void _set_mon_num_rank(int num, int rank); ///< called under mon->auth_lock
 
 private:
+  bool prepare_used_pending_keys(MonOpRequestRef op);
+
   // propose pending update to peers
   void encode_pending(MonitorDBStore::TransactionRef t) override;
   void encode_full(MonitorDBStore::TransactionRef t) override;
@@ -164,28 +176,61 @@ private:
   bool preprocess_command(MonOpRequestRef op);
   bool prepare_command(MonOpRequestRef op);
 
+  void _encode_keyring(KeyRing& kr, const EntityName& entity,
+    bufferlist& rdata, Formatter* fmtr,
+    std::map<std::string, bufferlist>* wanted_caps=nullptr);
+  void _encode_auth(const EntityName& entity, const EntityAuth& eauth,
+    bufferlist& rdata, Formatter* fmtr, bool pending_key=false,
+    std::map<std::string, bufferlist>* caps=nullptr);
+  void _encode_key(const EntityName& entity, const EntityAuth& eauth,
+    bufferlist& rdata, Formatter* fmtr, bool pending_key=false,
+    std::map<std::string, bufferlist>* caps=nullptr);
+
+  int _check_and_encode_caps(const std::map<std::string, std::string>& caps,
+    std::map<std::string, bufferlist>& encoded_caps, std::stringstream& ss);
+
+  int _update_or_create_entity(const EntityName& entity,
+    const std::map<std::string, std::string>& caps, MonOpRequestRef op,
+    std::stringstream& ss, std::stringstream& ds, bufferlist* rdata=nullptr,
+    Formatter* fmtr=nullptr, bool create_entity=false);
+  int _create_entity(const EntityName& entity,
+    const std::map<std::string, std::string>& caps, MonOpRequestRef op,
+    std::stringstream& ss, std::stringstream& ds, bufferlist* rdata,
+    Formatter* fmtr);
+  int _update_caps(const EntityName& entity,
+    const std::map<std::string, std::string>& caps, MonOpRequestRef op,
+    std::stringstream& ss, std::stringstream& ds, bufferlist* rdata,
+    Formatter* fmtr);
+
+  caps_update _gen_wanted_caps(EntityAuth& e_auth,
+    std::map<std::string, std::string>& newcaps, std::ostream& out);
+  template<typename CAP_ENTITY_CLASS>
+  caps_update _merge_caps(const std::string& cap_entity,
+    const std::string& new_cap_str, const std::string& cur_cap_str,
+    std::map<std::string, std::string>& newcaps, std::ostream& out);
+
   bool check_rotate();
+  void process_used_pending_keys(const std::map<EntityName,CryptoKey>& keys);
 
   bool entity_is_pending(EntityName& entity);
   int exists_and_matches_entity(
       const auth_entity_t& entity,
       bool has_secret,
-      stringstream& ss);
+      std::stringstream& ss);
   int exists_and_matches_entity(
       const EntityName& name,
       const EntityAuth& auth,
-      const map<string,bufferlist>& caps,
+      const std::map<std::string,ceph::buffer::list>& caps,
       bool has_secret,
-      stringstream& ss);
+      std::stringstream& ss);
   int remove_entity(const EntityName &entity);
   int add_entity(
       const EntityName& name,
       const EntityAuth& auth);
 
  public:
-  AuthMonitor(Monitor *mn, Paxos *p, const string& service_name)
+  AuthMonitor(Monitor &mn, Paxos &p, const std::string& service_name)
     : PaxosService(mn, p, service_name),
-      last_rotating_ver(0),
       max_global_id(0),
       last_allocated_id(0)
   {}
@@ -199,10 +244,10 @@ private:
       const uuid_d& uuid,
       EntityName& cephx_entity,
       EntityName& lockbox_entity,
-      stringstream& ss);
-  int do_osd_destroy(
-      const EntityName& cephx_entity,
-      const EntityName& lockbox_entity);
+      std::stringstream& ss);
+  void do_osd_destroy(
+       const EntityName& cephx_entity,
+       const EntityName& lockbox_entity);
 
   int do_osd_new(
       const auth_entity_t& cephx_entity,
@@ -211,15 +256,15 @@ private:
   int validate_osd_new(
       int32_t id,
       const uuid_d& uuid,
-      const string& cephx_secret,
-      const string& lockbox_secret,
+      const std::string& cephx_secret,
+      const std::string& lockbox_secret,
       auth_entity_t& cephx_entity,
       auth_entity_t& lockbox_entity,
-      stringstream& ss);
+      std::stringstream& ss);
 
-  void dump_info(Formatter *f);
+  void dump_info(ceph::Formatter *f);
 
-  bool is_valid_cephx_key(const string& k) {
+  bool is_valid_cephx_key(const std::string& k) {
     if (k.empty())
       return false;
 
@@ -227,7 +272,7 @@ private:
     try {
       ea.key.decode_base64(k);
       return true;
-    } catch (buffer::error& e) { /* fallthrough */ }
+    } catch (ceph::buffer::error& e) { /* fallthrough */ }
     return false;
   }
 };

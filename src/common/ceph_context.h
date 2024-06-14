@@ -25,8 +25,11 @@
 #include <typeinfo>
 #include <typeindex>
 
-#include "include/common_fwd.h"
+#include <boost/intrusive_ptr.hpp>
+
 #include "include/any.h"
+#include "include/common_fwd.h"
+#include "include/compat.h"
 
 #include "common/cmdparse.h"
 #include "common/code_environment.h"
@@ -59,6 +62,7 @@ namespace ceph {
   class HeartbeatMap;
   namespace logging {
     class Log;
+    class SubsystemMap;
   }
 }
 
@@ -80,6 +84,9 @@ public:
     // everything crimson is experimental...
     return true;
   }
+  ceph::PluginRegistry* get_plugin_registry() {
+    return _plugin_registry;
+  }
   CryptoRandom* random() const;
   PerfCountersCollectionImpl* get_perfcounters_collection();
   crimson::common::ConfigProxy& _conf;
@@ -89,6 +96,7 @@ public:
 private:
   std::unique_ptr<CryptoRandom> _crypto_random;
   unsigned nref;
+  ceph::PluginRegistry* _plugin_registry;
 };
 }
 #else
@@ -107,7 +115,13 @@ public:
   CephContext(uint32_t module_type_,
               enum code_environment_t code_env=CODE_ENVIRONMENT_UTILITY,
               int init_flags_ = 0);
-
+  struct create_options {
+    enum code_environment_t code_env=CODE_ENVIRONMENT_UTILITY;
+    int init_flags = 0;
+    std::function<ceph::logging::Log* (const ceph::logging::SubsystemMap *)> create_log;
+  };
+  CephContext(uint32_t module_type_,
+	      const create_options& options);
   CephContext(const CephContext&) = delete;
   CephContext& operator =(const CephContext&) = delete;
   CephContext(CephContext&&) = delete;
@@ -349,9 +363,9 @@ private:
   std::set<std::string> _experimental_features;
 
   ceph::PluginRegistry* _plugin_registry;
-
+#ifdef CEPH_DEBUG_MUTEX
   md_config_obs_t *_lockdep_obs;
-
+#endif
 public:
   TOPNSPC::crush::CrushLocation crush_location;
 private:
@@ -394,4 +408,17 @@ private:
 #endif
 #endif	// WITH_SEASTAR
 
+#if !(defined(WITH_SEASTAR) && !defined(WITH_ALIEN)) && defined(__cplusplus)
+namespace ceph::common {
+inline void intrusive_ptr_add_ref(CephContext* cct)
+{
+  cct->get();
+}
+
+inline void intrusive_ptr_release(CephContext* cct)
+{
+  cct->put();
+}
+}
+#endif // !(defined(WITH_SEASTAR) && !defined(WITH_ALIEN)) && defined(__cplusplus)
 #endif

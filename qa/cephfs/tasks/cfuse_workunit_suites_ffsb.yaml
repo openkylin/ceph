@@ -6,7 +6,6 @@ overrides:
     conf:
       osd:
         filestore flush min: 0
-        osd heartbeat grace: 60
 tasks:
 - check-counter:
     counters:

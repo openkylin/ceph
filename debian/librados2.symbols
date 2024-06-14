@@ -40,12 +40,12 @@ libceph-common.so.2 librados2 #MINVER#
  ceph_choose_crc32@Base 12.1.4
  (arch=arm64)ceph_crc32c_aarch64@Base 12.0.3
  ceph_crc32c_func@Base 12.0.3
- (arch=amd64)ceph_crc32c_intel_baseline@Base 12.0.3
  (arch=amd64 i386)ceph_crc32c_intel_fast@Base 12.0.3
  (arch=amd64 i386)ceph_crc32c_intel_fast_exists@Base 12.0.3
  (arch=ppc64el)ceph_crc32c_ppc@Base 12.0.3
  ceph_crc32c_sctp@Base 12.0.3
  ceph_crc32c_zeros@Base 12.1.4
+ ceph_memzero_s@Base 16.0.0
  ceph_options@Base 12.1.4
  ceph_strerror_r@Base 15.1.0
  ceph_unarmor@Base 12.0.3
@@ -54,13 +54,6 @@ libceph-common.so.2 librados2 #MINVER#
  check_utf8@Base 12.0.3
  check_utf8_cstr@Base 12.0.3
  code_environment_to_str@Base 12.0.3
- (arch=amd64)crc32_iscsi_00@Base 12.0.3
- (arch=amd64)crc32_iscsi_00_slver@Base 12.0.3
- (arch=amd64)crc32_iscsi_00_slver_00020014@Base 12.0.3
- (arch=amd64)crc32_iscsi_zero_00@Base 12.0.3
- (arch=amd64)crc32_iscsi_zero_00_slver@Base 12.0.3
- (arch=amd64)crc32_iscsi_zero_00_slver_00020014@Base 12.0.3
- (arch=amd64)crc32_table_iscsi_base@Base 12.0.3
  (arch=ppc64el)crc_zero@Base 12.1.4
  crush_add_bucket@Base 12.0.3
  crush_add_list_bucket_item@Base 12.0.3
@@ -92,7 +85,6 @@ libceph-common.so.2 librados2 #MINVER#
  crush_destroy_rule@Base 12.0.3
  crush_do_rule@Base 12.0.3
  crush_finalize@Base 12.0.3
- crush_find_rule@Base 12.0.3
  crush_get_bucket_item_weight@Base 12.0.3
  crush_get_next_bucket_id@Base 12.0.3
  crush_hash32@Base 12.0.3
@@ -119,20 +111,20 @@ libceph-common.so.2 librados2 #MINVER#
  crush_remove_uniform_bucket_item@Base 12.0.3
  crush_reweight_bucket@Base 12.0.3
  crush_rule_set_step@Base 12.0.3
- current_maxid@Base 12.0.3
  decode_utf8@Base 12.0.3
  encode_utf8@Base 12.0.3
  g_code_env@Base 12.0.3
- g_lockdep@Base 12.0.3
  get_linux_version@Base 12.0.3
+ get_page_size@Base 16.0.0
  get_process_name@Base 12.0.3
+ get_self_exe_path@Base 16.0.0
  is_control_character@Base 12.0.3
- last_freed_id@Base 12.0.3
  mime_decode_from_qp@Base 12.0.3
  mime_encode_as_qp@Base 12.0.3
  module_has_param@Base 12.0.3
  module_load@Base 12.0.3
  pem_key@Base 12.0.3
+ pipe_cloexec@Base 16.0.0
  resolve_addrs@Base 12.0.3
  reverse_bits@Base 12.1.4
  reverse_nibbles@Base 12.1.4
@@ -143,6 +135,9 @@ libceph-common.so.2 librados2 #MINVER#
  safe_read@Base 12.0.3
  safe_read_exact@Base 12.0.3
  safe_read_file@Base 12.0.3
+ safe_recv@Base 16.0.0
+ safe_recv_exact@Base 16.0.0
+ safe_send@Base 16.0.0
  safe_splice@Base 12.0.3
  safe_splice_exact@Base 12.0.3
  safe_write@Base 12.0.3
@@ -209,6 +204,7 @@ librados.so.2 librados2 #MINVER#
  rados_application_metadata_remove@Base 12.1.4
  rados_application_metadata_set@Base 12.1.4
  rados_blacklist_add@Base 0.93
+ rados_blocklist_add@Base 16.0.0
  rados_break_lock@Base 0.72.2
  rados_buffer_free@Base 0.72.2
  rados_cache_pin@Base 10.1.0
@@ -230,7 +226,9 @@ librados.so.2 librados2 #MINVER#
  rados_create_read_op@Base 0.79
  rados_create_with_context@Base 0.72.2
  rados_create_write_op@Base 0.79
+ rados_decode_notify_response@Base 16.0.0
  rados_exec@Base 0.72.2
+ rados_free_notify_response@Base 16.0.0
  rados_get_instance_id@Base 0.72.2
  rados_get_last_version@Base 0.72.2
  rados_get_min_compatible_client@Base 13.2.0
@@ -282,6 +280,7 @@ librados.so.2 librados2 #MINVER#
  rados_nobjects_list_close@Base 0.93
  rados_nobjects_list_get_cursor@Base 12.0.3
  rados_nobjects_list_get_pg_hash_position@Base 0.93
+ rados_nobjects_list_next2@Base 17.0.0~
  rados_nobjects_list_next@Base 0.93
  rados_nobjects_list_open@Base 0.93
  rados_nobjects_list_seek@Base 0.93

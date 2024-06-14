@@ -52,14 +52,23 @@
 // entirely. By calling the callback with old version of dl_phdr_info from
 // our dl_iterate_phdr we can effectively make libgcc callback thread safe.
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
 #include <link.h>
 #include <dlfcn.h>
 #include <assert.h>
 #include <vector>
 #include <cstddef>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/exception_hacks.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/util/backtrace.hh>
+#endif
 
 namespace seastar {
 using dl_iterate_fn = int (*) (int (*callback) (struct dl_phdr_info *info, size_t size, void *data), void *data);
@@ -81,6 +90,10 @@ static dl_iterate_fn dl_iterate_phdr_org() {
 static std::vector<dl_phdr_info> *phdrs_cache = nullptr;
 
 void init_phdr_cache() {
+    // this process started reactor before, no need to fill the cache
+    if (phdrs_cache) {
+        return;
+    }
     // Fill out elf header cache for access without locking.
     // This assumes no dynamic object loading/unloading after this point
     phdrs_cache = new std::vector<dl_phdr_info>();
@@ -88,6 +101,10 @@ void init_phdr_cache() {
         phdrs_cache->push_back(*info);
         return 0;
     }, nullptr);
+}
+
+void internal::increase_thrown_exceptions_counter() noexcept {
+    seastar::engine()._cxx_exceptions++;
 }
 
 #ifndef NO_EXCEPTION_INTERCEPT
@@ -112,7 +129,7 @@ extern "C"
 [[gnu::used]]
 [[gnu::no_sanitize_address]]
 int dl_iterate_phdr(int (*callback) (struct dl_phdr_info *info, size_t size, void *data), void *data) {
-    if (!seastar::local_engine || !seastar::phdrs_cache) {
+    if (!seastar::phdrs_cache || !seastar::local_engine) {
         // Cache is not yet populated, pass through to original function
         return seastar::dl_iterate_phdr_org()(callback, data);
     }
@@ -134,7 +151,7 @@ int dl_iterate_phdr(int (*callback) (struct dl_phdr_info *info, size_t size, voi
 extern "C"
 [[gnu::visibility("default")]]
 [[gnu::used]]
-int _Unwind_RaiseException(struct _Unwind_Exception *h) {
+int _Unwind_RaiseException(struct ::_Unwind_Exception *h) {
     using throw_fn =  int (*)(void *);
     static throw_fn org = nullptr;
 
@@ -142,8 +159,8 @@ int _Unwind_RaiseException(struct _Unwind_Exception *h) {
         org = (throw_fn)dlsym (RTLD_NEXT, "_Unwind_RaiseException");
     }
     if (seastar::local_engine) {
+        seastar::internal::increase_thrown_exceptions_counter();
         seastar::log_exception_trace();
-        seastar::engine()._cxx_exceptions++;
     }
     return org(h);
 }

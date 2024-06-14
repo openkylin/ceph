@@ -15,6 +15,8 @@
 #ifndef ECBMSGTYPES_H
 #define ECBMSGTYPES_H
 
+#include <fmt/format.h>
+
 #include "osd_types.h"
 #include "include/buffer.h"
 #include "os/ObjectStore.h"
@@ -30,7 +32,7 @@ struct ECSubWrite {
   eversion_t at_version;
   eversion_t trim_to;
   eversion_t roll_forward_to;
-  vector<pg_log_entry_t> log_entries;
+  std::vector<pg_log_entry_t> log_entries;
   std::set<hobject_t> temp_added;
   std::set<hobject_t> temp_removed;
   std::optional<pg_hit_set_history_t> updated_hit_set_history;
@@ -46,7 +48,7 @@ struct ECSubWrite {
     eversion_t at_version,
     eversion_t trim_to,
     eversion_t roll_forward_to,
-    vector<pg_log_entry_t> log_entries,
+    std::vector<pg_log_entry_t> log_entries,
     std::optional<pg_hit_set_history_t> updated_hit_set_history,
     const std::set<hobject_t> &temp_added,
     const std::set<hobject_t> &temp_removed,
@@ -119,7 +121,7 @@ struct ECSubReadReply {
   pg_shard_t from;
   ceph_tid_t tid;
   std::map<hobject_t, std::list<std::pair<uint64_t, ceph::buffer::list> >> buffers_read;
-  std::map<hobject_t, std::map<string, ceph::buffer::list>> attrs_read;
+  std::map<hobject_t, std::map<std::string, ceph::buffer::list, std::less<>>> attrs_read;
   std::map<hobject_t, int> errors;
   void encode(ceph::buffer::list &bl) const;
   void decode(ceph::buffer::list::const_iterator &bl);
@@ -136,5 +138,10 @@ std::ostream &operator<<(
   std::ostream &lhs, const ECSubRead &rhs);
 std::ostream &operator<<(
   std::ostream &lhs, const ECSubReadReply &rhs);
+
+template <> struct fmt::formatter<ECSubWrite> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<ECSubWriteReply> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<ECSubRead> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<ECSubReadReply> : fmt::ostream_formatter {};
 
 #endif

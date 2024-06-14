@@ -1,4 +1,5 @@
 ## install from source tree
+etc/sudoers.d/ceph-smartctl
 lib/systemd/system/ceph-crash.service
 usr/bin/ceph-crash
 usr/bin/ceph-kvstore-tool

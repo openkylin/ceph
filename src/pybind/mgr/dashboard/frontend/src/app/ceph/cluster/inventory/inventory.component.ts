@@ -2,8 +2,10 @@ import { Component, Input, NgZone, OnChanges, OnDestroy, OnInit } from '@angular
 
 import { Subscription, timer as observableTimer } from 'rxjs';
 
-import { OrchestratorService } from '../../../shared/api/orchestrator.service';
-import { Icons } from '../../../shared/enum/icons.enum';
+import { HostService } from '~/app/shared/api/host.service';
+import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { OrchestratorStatus } from '~/app/shared/models/orchestrator.interface';
 import { InventoryDevice } from './inventory-devices/inventory-device.model';
 
 @Component({
@@ -21,16 +23,20 @@ export class InventoryComponent implements OnChanges, OnInit, OnDestroy {
 
   icons = Icons;
 
-  hasOrchestrator = false;
+  orchStatus: OrchestratorStatus;
   showDocPanel = false;
 
   devices: Array<InventoryDevice> = [];
 
-  constructor(private orchService: OrchestratorService, private ngZone: NgZone) {}
+  constructor(
+    private orchService: OrchestratorService,
+    private hostService: HostService,
+    private ngZone: NgZone
+  ) {}
 
   ngOnInit() {
     this.orchService.status().subscribe((status) => {
-      this.hasOrchestrator = status.available;
+      this.orchStatus = status;
       this.showDocPanel = !status.available;
       if (status.available) {
         // Create a timer to get cached inventory from the orchestrator.
@@ -51,13 +57,11 @@ export class InventoryComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
-    if (this.reloadSubscriber) {
-      this.reloadSubscriber.unsubscribe();
-    }
+    this.reloadSubscriber?.unsubscribe();
   }
 
   ngOnChanges() {
-    if (this.hasOrchestrator) {
+    if (this.orchStatus?.available) {
       this.devices = [];
       this.getInventory(false);
     }
@@ -67,7 +71,7 @@ export class InventoryComponent implements OnChanges, OnInit, OnDestroy {
     if (this.hostname === '') {
       return;
     }
-    this.orchService.inventoryDeviceList(this.hostname, refresh).subscribe(
+    this.hostService.inventoryDeviceList(this.hostname, refresh).subscribe(
       (devices: InventoryDevice[]) => {
         this.devices = devices;
       },

@@ -23,7 +23,6 @@
 #include "librbd/api/Namespace.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/ImageRequest.h"
-#include "librbd/io/ImageRequestWQ.h"
 #include "librbd/journal/Types.h"
 #include "librbd/mirror/snapshot/GetImageStateRequest.h"
 #include "librbd/mirror/snapshot/RemoveImageStateRequest.h"
@@ -36,6 +35,8 @@
 #include <boost/assign/list_of.hpp>
 #include <utility>
 #include <vector>
+
+using namespace std;
 
 void register_test_mirroring() {
 }
@@ -1268,7 +1269,7 @@ TEST_F(TestMirroring, SnapshotUnlinkPeer)
 
   C_SaferCond cond1;
   auto req = librbd::mirror::snapshot::UnlinkPeerRequest<>::create(
-    ictx, snap_id, peer1_uuid, &cond1);
+    ictx, snap_id, peer1_uuid, true, &cond1);
   req->send();
   ASSERT_EQ(0, cond1.wait());
 
@@ -1313,7 +1314,7 @@ TEST_F(TestMirroring, SnapshotUnlinkPeer)
 
   C_SaferCond cond2;
   req = librbd::mirror::snapshot::UnlinkPeerRequest<>::create(
-    ictx, snap_id, peer2_uuid, &cond2);
+    ictx, snap_id, peer2_uuid, true, &cond2);
   req->send();
   ASSERT_EQ(0, cond2.wait());
 
@@ -1384,7 +1385,7 @@ TEST_F(TestMirroring, SnapshotImageState)
   ASSERT_EQ(features & ~RBD_FEATURES_IMPLICIT_ENABLE, image_state.features);
   ASSERT_EQ(1U, image_state.snapshots.size());
   ASSERT_EQ("snap", image_state.snapshots.begin()->second.name);
-  ASSERT_TRUE(image_state.metadata.empty());
+  uint8_t original_pairs_num = image_state.metadata.size();
 
   {
     C_SaferCond cond;
@@ -1420,7 +1421,7 @@ TEST_F(TestMirroring, SnapshotImageState)
 
   ASSERT_EQ(image_name, image_state.name);
   ASSERT_EQ(features & ~RBD_FEATURES_IMPLICIT_ENABLE, image_state.features);
-  ASSERT_EQ(10U, image_state.metadata.size());
+  ASSERT_EQ(original_pairs_num + 10, image_state.metadata.size());
   for (int i = 0; i < 10; i++) {
     auto &bl = image_state.metadata[stringify(i)];
     ASSERT_EQ(0, strncmp(std::string(1024, 'A' + i).c_str(), bl.c_str(),

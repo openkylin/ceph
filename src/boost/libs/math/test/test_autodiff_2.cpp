@@ -97,7 +97,41 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(pow, T, bin_float_types) {
                     eps);
 }
 
-// TODO Tests around x=0 or y=0: pow(x,y)
+BOOST_AUTO_TEST_CASE_TEMPLATE(pow0, T, bin_float_types) {
+  const T eps = 201 * std::numeric_limits<T>::epsilon(); // percent
+  using std::pow;
+  constexpr std::size_t m = 5;
+  constexpr std::size_t n = 4;
+  const T cx = 0.0;
+  {
+    const T cy = 3.0;
+    const auto x = make_fvar<T, m>(cx);
+    auto z0 = pow(x, cy);
+    BOOST_CHECK_EQUAL(z0.derivative(0u), pow(cx, cy));
+    BOOST_CHECK_EQUAL(z0.derivative(1u), cy * pow(cx, cy - 1));
+    BOOST_CHECK_EQUAL(z0.derivative(2u), cy * (cy - 1) * pow(cx, cy - 2));
+    BOOST_CHECK_EQUAL(z0.derivative(3u),
+                      cy * (cy - 1) * (cy - 2) * pow(cx, cy - 3));
+    BOOST_CHECK_EQUAL(z0.derivative(4u), 0u);
+    BOOST_CHECK_EQUAL(z0.derivative(5u), 0u);
+  }
+  {
+    const T cy = 3.5;
+    const auto x = make_fvar<T, m>(cx);
+    auto z0 = pow(x, cy);
+    BOOST_CHECK_EQUAL(z0.derivative(0u), pow(cx, cy));
+    BOOST_CHECK_EQUAL(z0.derivative(1u), cy * pow(cx, cy - 1));
+    BOOST_CHECK_EQUAL(z0.derivative(2u), cy * (cy - 1) * pow(cx, cy - 2));
+    BOOST_CHECK_EQUAL(z0.derivative(3u),
+                      cy * (cy - 1) * (cy - 2) * pow(cx, cy - 3));
+    BOOST_CHECK_EQUAL(z0.derivative(4u),
+                      cy * (cy - 1) * (cy - 2) * (cy - 3) * pow(cx, cy - 4));
+    BOOST_CHECK_EQUAL(z0.derivative(5u),
+                      cy * (cy - 1) * (cy - 2) * (cy - 3) * (cy - 4) * pow(cx, cy - 5));
+  }
+}
+
+// TODO Tests around y=0: pow(x,y)
 BOOST_AUTO_TEST_CASE_TEMPLATE(pow2, T, bin_float_types) {
   const T eps = 4000 * std::numeric_limits<T>::epsilon(); // percent
   using std::pow;
@@ -269,7 +303,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(log_test, T, all_float_types) {
 BOOST_AUTO_TEST_CASE_TEMPLATE(ylogx, T, all_float_types) {
   using std::log;
   using std::pow;
-  const T eps = 100 * std::numeric_limits<T>::epsilon(); // percent
+  const T eps = (std::numeric_limits<T>::digits > 100 ? 300 : 100) * std::numeric_limits<T>::epsilon(); // percent
   constexpr std::size_t m = 5;
   constexpr std::size_t n = 4;
   const T cx = 2.0;
@@ -492,6 +526,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(asinh_test, T, bin_float_types) {
 
 BOOST_AUTO_TEST_CASE_TEMPLATE(atan2_function, T, all_float_types) {
   using test_constants = test_constants_t<T>;
+  using std::atan2;
   static constexpr auto m = test_constants::order;
 
   test_detail::RandomSample<T> x_sampler{-2000, 2000};

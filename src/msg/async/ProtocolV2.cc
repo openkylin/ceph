@@ -16,7 +16,7 @@
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
 #define dout_prefix _conn_prefix(_dout)
-ostream &ProtocolV2::_conn_prefix(std::ostream *_dout) {
+std::ostream &ProtocolV2::_conn_prefix(std::ostream *_dout) {
   return *_dout << "--2- " << messenger->get_myaddrs() << " >> "
                 << *connection->peer_addrs << " conn(" << connection << " "
                 << this
@@ -26,8 +26,10 @@ ostream &ProtocolV2::_conn_prefix(std::ostream *_dout) {
                 << " cs=" << connect_seq << " l=" << connection->policy.lossy
                 << " rev1=" << HAVE_MSGR2_FEATURE(peer_supported_features,
                                                   REVISION_1)
-                << " rx=" << session_stream_handlers.rx.get()
+                << " crypto rx=" << session_stream_handlers.rx.get()
                 << " tx=" << session_stream_handlers.tx.get()
+                << " comp rx=" << session_compression_handlers.rx.get()
+                << " tx=" << session_compression_handlers.tx.get()
                 << ").";
 }
 
@@ -45,8 +47,8 @@ void ProtocolV2::run_continuation(CtPtr pcontinuation) {
 void ProtocolV2::run_continuation(CtRef continuation) {
   try {
     CONTINUATION_RUN(continuation)
-  } catch (const buffer::error &e) {
-    lderr(cct) << __func__ << " failed decoding of frame header: " << e
+  } catch (const ceph::buffer::error &e) {
+    lderr(cct) << __func__ << " failed decoding of frame header: " << e.what()
                << dendl;
     _fault();
   } catch (const ceph::crypto::onwire::MsgAuthError &e) {
@@ -59,7 +61,7 @@ void ProtocolV2::run_continuation(CtRef continuation) {
 
 #define WRITE(B, D, C) write(D, CONTINUATION(C), B)
 
-#define READ(L, C) read(CONTINUATION(C), buffer::ptr_node::create(buffer::create(L)))
+#define READ(L, C) read(CONTINUATION(C), ceph::buffer::ptr_node::create(ceph::buffer::create(L)))
 
 #define READ_RXBUF(B, C) read(CONTINUATION(C), B)
 
@@ -94,8 +96,10 @@ ProtocolV2::ProtocolV2(AsyncConnection *connection)
       replacing(false),
       can_write(false),
       bannerExchangeCallback(nullptr),
-      tx_frame_asm(&session_stream_handlers, false),
-      rx_frame_asm(&session_stream_handlers, false),
+      tx_frame_asm(&session_stream_handlers, false, cct->_conf->ms_crc_data,
+                   &session_compression_handlers),
+      rx_frame_asm(&session_stream_handlers, false, cct->_conf->ms_crc_data,
+                   &session_compression_handlers),
       next_tag(static_cast<Tag>(0)),
       keepalive(false) {
 }
@@ -123,7 +127,7 @@ bool ProtocolV2::is_connected() { return can_write; }
 void ProtocolV2::discard_out_queue() {
   ldout(cct, 10) << __func__ << " started" << dendl;
 
-  for (list<Message *>::iterator p = sent.begin(); p != sent.end(); ++p) {
+  for (auto p = sent.begin(); p != sent.end(); ++p) {
     ldout(cct, 20) << __func__ << " discard " << *p << dendl;
     (*p)->put();
   }
@@ -246,15 +250,17 @@ void ProtocolV2::reset_recv_state() {
     // `write_event()` unlocks it just before calling `write_message()`.
     // `submit_to()` here is NOT blocking.
     connection->center->submit_to(connection->center->get_id(), [this] {
-      ldout(cct, 5) << "reset_recv_state (warped) reseting crypto handlers"
+      ldout(cct, 5) << "reset_recv_state (warped) reseting crypto and compression handlers"
                     << dendl;
       // Possibly unnecessary. See the comment in `deactivate_existing`.
       std::lock_guard<std::mutex> l(connection->lock);
       std::lock_guard<std::mutex> wl(connection->write_lock);
       reset_security();
+      reset_compression();
     }, /* always_async = */true);
   } else {
     reset_security();
+    reset_compression();
   }
 
   // clean read and write callbacks
@@ -527,8 +533,8 @@ ssize_t ProtocolV2::write_message(Message *m, bool more) {
   ceph_msg_header2 header2{header.seq,        header.tid,
                            header.type,       header.priority,
                            header.version,
-                           init_le32(0),      header.data_off,
-                           init_le64(ack_seq),
+                           ceph_le32(0),      header.data_off,
+                           ceph_le64(ack_seq),
                            footer.flags,      header.compat_version,
                            header.reserved};
 
@@ -556,8 +562,11 @@ ssize_t ProtocolV2::write_message(Message *m, bool more) {
     ldout(cct, 1) << __func__ << " error sending " << m << ", "
                   << cpp_strerror(rc) << dendl;
   } else {
-    connection->logger->inc(
-        l_msgr_send_bytes, total_send_size - connection->outgoing_bl.length());
+    const auto sent_bytes = total_send_size - connection->outgoing_bl.length();
+    connection->logger->inc(l_msgr_send_bytes, sent_bytes);
+    if (session_stream_handlers.tx) {
+      connection->logger->inc(l_msgr_send_encrypted_bytes, sent_bytes);
+    }
     ldout(cct, 10) << __func__ << " sending " << m
                    << (rc ? " continuely." : " done.") << dendl;
   }
@@ -585,7 +594,7 @@ bool ProtocolV2::append_frame(F& frame) {
 
   ldout(cct, 25) << __func__ << " assembled frame " << bl.length()
                  << " bytes " << tx_frame_asm << dendl;
-  connection->outgoing_bl.append(bl);
+  connection->outgoing_bl.claim_append(bl);
   return true;
 }
 
@@ -617,6 +626,14 @@ void ProtocolV2::handle_message_ack(uint64_t seq) {
   }
 }
 
+void ProtocolV2::reset_compression() {
+  ldout(cct, 5) << __func__ << dendl;
+
+  comp_meta = CompConnectionMeta{};
+  session_compression_handlers.rx.reset(nullptr);
+  session_compression_handlers.tx.reset(nullptr);
+}
+
 void ProtocolV2::write_event() {
   ldout(cct, 10) << __func__ << dendl;
   ssize_t r = 0;
@@ -639,6 +656,13 @@ void ProtocolV2::write_event() {
     auto start = ceph::mono_clock::now();
     bool more;
     do {
+      if (connection->is_queued()) {
+	if (r = connection->_try_send(); r!= 0) {
+	  // either fails to send or not all queued buffer is sent
+	  break;
+	}
+      }
+
       const auto out_entry = _get_next_outgoing();
       if (!out_entry.m) {
         break;
@@ -756,7 +780,7 @@ CtPtr ProtocolV2::read(CONTINUATION_RXBPTR_TYPE<ProtocolV2> &next,
     });
   if (r <= 0) {
     // error or done synchronously
-    if (unlikely(pre_auth.enabled) && r >= 0) {
+    if (unlikely(pre_auth.enabled) && r == 0) {
       pre_auth.rxbuf.append(*next.node);
       ceph_assert(!cct->_conf->ms_die_on_bug ||
 		  pre_auth.rxbuf.length() < 20000000);
@@ -787,7 +811,7 @@ CtPtr ProtocolV2::write(const std::string &desc,
 
 CtPtr ProtocolV2::write(const std::string &desc,
                         CONTINUATION_TYPE<ProtocolV2> &next,
-                        bufferlist &buffer) {
+                        ceph::bufferlist &buffer) {
   if (unlikely(pre_auth.enabled)) {
     pre_auth.txbuf.append(buffer);
     ceph_assert(!cct->_conf->ms_die_on_bug ||
@@ -821,11 +845,12 @@ CtPtr ProtocolV2::_banner_exchange(CtRef callback) {
   ldout(cct, 20) << __func__ << dendl;
   bannerExchangeCallback = &callback;
 
-  bufferlist banner_payload;
+  ceph::bufferlist banner_payload;
+  using ceph::encode;
   encode((uint64_t)CEPH_MSGR2_SUPPORTED_FEATURES, banner_payload, 0);
   encode((uint64_t)CEPH_MSGR2_REQUIRED_FEATURES, banner_payload, 0);
 
-  bufferlist bl;
+  ceph::bufferlist bl;
   bl.append(CEPH_BANNER_V2_PREFIX, strlen(CEPH_BANNER_V2_PREFIX));
   encode((uint16_t)banner_payload.length(), bl, 0);
   bl.claim_append(banner_payload);
@@ -862,14 +887,15 @@ CtPtr ProtocolV2::_handle_peer_banner(rx_buffer_t &&buffer, int r) {
   }
 
   uint16_t payload_len;
-  bufferlist bl;
+  ceph::bufferlist bl;
   buffer->set_offset(banner_prefix_len);
   buffer->set_length(sizeof(ceph_le16));
   bl.push_back(std::move(buffer));
   auto ti = bl.cbegin();
+  using ceph::decode;
   try {
     decode(payload_len, ti);
-  } catch (const buffer::error &e) {
+  } catch (const ceph::buffer::error &e) {
     lderr(cct) << __func__ << " decode banner payload len failed " << dendl;
     return _fault();
   }
@@ -891,13 +917,14 @@ CtPtr ProtocolV2::_handle_peer_banner_payload(rx_buffer_t &&buffer, int r) {
   uint64_t peer_supported_features;
   uint64_t peer_required_features;
 
-  bufferlist bl;
+  ceph::bufferlist bl;
+  using ceph::decode;
   bl.push_back(std::move(buffer));
   auto ti = bl.cbegin();
   try {
     decode(peer_supported_features, ti);
     decode(peer_required_features, ti);
-  } catch (const buffer::error &e) {
+  } catch (const ceph::buffer::error &e) {
     lderr(cct) << __func__ << " decode banner payload failed " << dendl;
     return _fault();
   }
@@ -1066,7 +1093,7 @@ CtPtr ProtocolV2::handle_read_frame_preamble_main(rx_buffer_t &&buffer, int r) {
 
   if (r < 0) {
     ldout(cct, 1) << __func__ << " read frame preamble failed r=" << r
-                  << " (" << cpp_strerror(r) << ")" << dendl;
+                  << dendl;
     return _fault();
   }
 
@@ -1101,6 +1128,7 @@ CtPtr ProtocolV2::handle_read_frame_preamble_main(rx_buffer_t &&buffer, int r) {
       lderr(cct) << __func__ << " not in ready state!" << dendl;
       return _fault();
     }
+    recv_stamp = ceph_clock_now();
     state = THROTTLE_MESSAGE;
     return CONTINUE(throttle_message);
   } else {
@@ -1132,6 +1160,8 @@ CtPtr ProtocolV2::handle_read_frame_dispatch() {
     case Tag::KEEPALIVE2_ACK:
     case Tag::ACK:
     case Tag::WAIT:
+    case Tag::COMPRESSION_REQUEST:
+    case Tag::COMPRESSION_DONE:
       return handle_frame_payload();
     case Tag::MESSAGE:
       return handle_message();
@@ -1159,7 +1189,7 @@ CtPtr ProtocolV2::read_frame_segment() {
   rx_buffer_t rx_buffer;
   uint16_t align = rx_frame_asm.get_segment_align(seg_idx);
   try {
-    rx_buffer = buffer::ptr_node::create(buffer::create_aligned(
+    rx_buffer = ceph::buffer::ptr_node::create(ceph::buffer::create_aligned(
         onwire_len, align));
   } catch (const ceph::buffer::bad_alloc&) {
     // Catching because of potential issues with satisfying alignment.
@@ -1246,6 +1276,10 @@ CtPtr ProtocolV2::handle_frame_payload() {
       return handle_message_ack(payload);
     case Tag::WAIT:
       return handle_wait(payload);
+    case Tag::COMPRESSION_REQUEST:
+      return handle_compression_request(payload);
+    case Tag::COMPRESSION_DONE:
+      return handle_compression_done(payload);
     default:
       ceph_abort();
   }
@@ -1301,11 +1335,9 @@ CtPtr ProtocolV2::handle_read_frame_epilogue_main(rx_buffer_t &&buffer, int r)
 }
 
 CtPtr ProtocolV2::_handle_read_frame_epilogue_main() {
-  bool aborted;
+  bool ok = false;
   try {
-    rx_frame_asm.disassemble_first_segment(rx_preamble, rx_segments_data[0]);
-    aborted = !rx_frame_asm.disassemble_remaining_segments(
-        rx_segments_data.data(), rx_epilogue);
+    ok = rx_frame_asm.disassemble_segments(rx_preamble, rx_segments_data.data(), rx_epilogue);
   } catch (FrameError& e) {
     ldout(cct, 1) << __func__ << " " << e.what() << dendl;
     return _fault();
@@ -1317,7 +1349,7 @@ CtPtr ProtocolV2::_handle_read_frame_epilogue_main() {
   // we do have a mechanism that allows transmitter to start sending message
   // and abort after putting entire data field on wire. This will be used by
   // the kernel client to avoid unnecessary buffering.
-  if (aborted) {
+  if (!ok) {
     reset_throttle();
     state = READY;
     return CONTINUE(read_frame);
@@ -1328,11 +1360,6 @@ CtPtr ProtocolV2::_handle_read_frame_epilogue_main() {
 CtPtr ProtocolV2::handle_message() {
   ldout(cct, 20) << __func__ << dendl;
   ceph_assert(state == THROTTLE_DONE);
-
-#if defined(WITH_EVENTTRACE)
-  utime_t ltt_recv_stamp = ceph_clock_now();
-#endif
-  recv_stamp = ceph_clock_now();
 
   const size_t cur_msg_size = get_current_msg_size();
   auto msg_frame = MessageFrame::Decode(rx_segments_data);
@@ -1356,16 +1383,16 @@ CtPtr ProtocolV2::handle_message() {
                          current_header.type,
                          current_header.priority,
                          current_header.version,
-                         init_le32(msg_frame.front_len()),
-                         init_le32(msg_frame.middle_len()),
-                         init_le32(msg_frame.data_len()),
+                         ceph_le32(msg_frame.front_len()),
+                         ceph_le32(msg_frame.middle_len()),
+                         ceph_le32(msg_frame.data_len()),
                          current_header.data_off,
                          peer_name,
                          current_header.compat_version,
                          current_header.reserved,
-                         init_le32(0)};
-  ceph_msg_footer footer{init_le32(0), init_le32(0),
-	                 init_le32(0), init_le64(0), current_header.flags};
+                         ceph_le32(0)};
+  ceph_msg_footer footer{ceph_le32(0), ceph_le32(0),
+	                 ceph_le32(0), ceph_le64(0), current_header.flags};
 
   Message *message = decode_message(cct, 0, header, footer,
       msg_frame.front(),
@@ -1422,7 +1449,7 @@ CtPtr ProtocolV2::handle_message() {
       message->get_type() == CEPH_MSG_OSD_OPREPLY) {
     utime_t ltt_processed_stamp = ceph_clock_now();
     double usecs_elapsed =
-        (ltt_processed_stamp.to_nsec() - ltt_recv_stamp.to_nsec()) / 1000;
+      ((double)(ltt_processed_stamp.to_nsec() - recv_stamp.to_nsec())) / 1000;
     ostringstream buf;
     if (message->get_type() == CEPH_MSG_OSD_OP)
       OID_ELAPSED_WITH_MSG(message, usecs_elapsed, "TIME_TO_DECODE_OSD_OP",
@@ -1459,6 +1486,10 @@ CtPtr ProtocolV2::handle_message() {
   connection->logger->inc(l_msgr_recv_messages);
   connection->logger->inc(l_msgr_recv_bytes,
                           rx_frame_asm.get_frame_onwire_len());
+  if (session_stream_handlers.rx) {
+    connection->logger->inc(l_msgr_recv_encrypted_bytes,
+                            rx_frame_asm.get_frame_onwire_len());
+  }
 
   messenger->ms_fast_preprocess(message);
   fast_dispatch_time = ceph::mono_clock::now();
@@ -1513,7 +1544,7 @@ CtPtr ProtocolV2::throttle_message() {
                    << "/" << connection->policy.throttler_messages->get_max()
                    << dendl;
     if (!connection->policy.throttler_messages->get_or_fail()) {
-      ldout(cct, 10) << __func__ << " wants 1 message from policy throttle "
+      ldout(cct, 1) << __func__ << " wants 1 message from policy throttle "
                      << connection->policy.throttler_messages->get_current()
                      << "/" << connection->policy.throttler_messages->get_max()
                      << " failed, just wait." << dendl;
@@ -1543,7 +1574,7 @@ CtPtr ProtocolV2::throttle_bytes() {
                      << connection->policy.throttler_bytes->get_current() << "/"
                      << connection->policy.throttler_bytes->get_max() << dendl;
       if (!connection->policy.throttler_bytes->get_or_fail(cur_msg_size)) {
-        ldout(cct, 10) << __func__ << " wants " << cur_msg_size
+        ldout(cct, 1) << __func__ << " wants " << cur_msg_size
                        << " bytes from policy throttler "
                        << connection->policy.throttler_bytes->get_current()
                        << "/" << connection->policy.throttler_bytes->get_max()
@@ -1571,7 +1602,7 @@ CtPtr ProtocolV2::throttle_dispatch_queue() {
   if (cur_msg_size) {
     if (!connection->dispatch_queue->dispatch_throttler.get_or_fail(
             cur_msg_size)) {
-      ldout(cct, 10)
+      ldout(cct, 1)
           << __func__ << " wants " << cur_msg_size
           << " bytes from dispatch throttle "
           << connection->dispatch_queue->dispatch_throttler.get_current() << "/"
@@ -1686,8 +1717,8 @@ CtPtr ProtocolV2::send_auth_request(std::vector<uint32_t> &allowed_methods) {
   ldout(cct, 20) << __func__ << " peer_type " << (int)connection->peer_type
 		 << " auth_client " << messenger->auth_client << dendl;
 
-  bufferlist bl;
-  vector<uint32_t> preferred_modes;
+  ceph::bufferlist bl;
+  std::vector<uint32_t> preferred_modes;
   auto am = auth_meta;
   connection->lock.unlock();
   int r = messenger->auth_client->get_auth_request(
@@ -1825,6 +1856,29 @@ CtPtr ProtocolV2::handle_auth_done(ceph::bufferlist &payload)
 }
 
 CtPtr ProtocolV2::finish_client_auth() {
+  if (HAVE_MSGR2_FEATURE(peer_supported_features, COMPRESSION)) {
+    return send_compression_request();
+  }
+
+  return start_session_connect();
+}
+
+CtPtr ProtocolV2::finish_server_auth() {
+  // server had sent AuthDone and client responded with correct pre-auth
+  // signature. 
+  // We can start conditioanl msgr protocol
+  if (HAVE_MSGR2_FEATURE(peer_supported_features, COMPRESSION)) {
+    state = COMPRESSION_ACCEPTING;
+  } else {
+    // No msgr protocol features to process
+    // we can start accepting new sessions/reconnects.
+    state = SESSION_ACCEPTING;
+  }
+
+  return CONTINUE(read_frame);
+}
+
+CtPtr ProtocolV2::start_session_connect() {
   if (!server_cookie) {
     ceph_assert(connect_seq == 0);
     state = SESSION_CONNECTING;
@@ -2084,6 +2138,40 @@ CtPtr ProtocolV2::handle_server_ident(ceph::bufferlist &payload)
   return ready();
 }
 
+CtPtr ProtocolV2::send_compression_request() {
+  state = COMPRESSION_CONNECTING;
+
+  const entity_type_t peer_type = connection->get_peer_type();
+  comp_meta.con_mode =
+    static_cast<Compressor::CompressionMode>(
+      messenger->comp_registry.get_mode(peer_type, auth_meta->is_mode_secure()));
+  const auto preferred_methods = messenger->comp_registry.get_methods(peer_type);
+  auto comp_req_frame = CompressionRequestFrame::Encode(comp_meta.is_compress(), preferred_methods);
+
+  INTERCEPT(19);
+  return WRITE(comp_req_frame, "compression request", read_frame);
+}
+
+CtPtr ProtocolV2::handle_compression_done(ceph::bufferlist &payload) {
+  if (state != COMPRESSION_CONNECTING) {
+    lderr(cct) << __func__ << " state changed!" << dendl;
+    return _fault();
+  }
+
+  auto response = CompressionDoneFrame::Decode(payload);
+  ldout(cct, 10) << __func__ << " CompressionDoneFrame(is_compress=" << response.is_compress()
+		 << ", method=" << response.method() << ")" << dendl;
+
+  comp_meta.con_method = static_cast<Compressor::CompressionAlgorithm>(response.method());
+  if (comp_meta.is_compress() != response.is_compress()) {
+    comp_meta.con_mode = Compressor::COMP_NONE;
+  }
+  session_compression_handlers = ceph::compression::onwire::rxtx_t::create_handler_pair(
+    cct, comp_meta, messenger->comp_registry.get_min_compression_size(connection->get_peer_type()));
+
+  return start_session_connect();
+}
+
 /* Server Protocol Methods */
 
 CtPtr ProtocolV2::start_server_banner_exchange() {
@@ -2145,12 +2233,12 @@ CtPtr ProtocolV2::_auth_bad_method(int r)
   return WRITE(bad_method, "bad auth method", read_frame);
 }
 
-CtPtr ProtocolV2::_handle_auth_request(bufferlist& auth_payload, bool more)
+CtPtr ProtocolV2::_handle_auth_request(ceph::bufferlist& auth_payload, bool more)
 {
   if (!messenger->auth_server) {
     return _fault();
   }
-  bufferlist reply;
+  ceph::bufferlist reply;
   auto am = auth_meta;
   connection->lock.unlock();
   int r = messenger->auth_server->handle_auth_request(
@@ -2247,10 +2335,8 @@ CtPtr ProtocolV2::handle_auth_signature(ceph::bufferlist &payload)
   }
 
   if (state == AUTH_ACCEPTING_SIGN) {
-    // server had sent AuthDone and client responded with correct pre-auth
-    // signature. we can start accepting new sessions/reconnects.
-    state = SESSION_ACCEPTING;
-    return CONTINUE(read_frame);
+    // this happened on server side
+    return finish_server_auth();
   } else if (state == AUTH_CONNECTING_SIGN) {
     // this happened at client side
     return finish_client_auth();
@@ -2524,7 +2610,7 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
 CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing) {
   ldout(cct, 20) << __func__ << " existing=" << existing << dendl;
 
-  std::lock_guard<std::mutex> l(existing->lock);
+  std::unique_lock<std::mutex> l(existing->lock);
 
   ProtocolV2 *exproto = dynamic_cast<ProtocolV2 *>(existing->protocol.get());
   if (!exproto) {
@@ -2535,6 +2621,7 @@ CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing)
   if (exproto->state == CLOSED) {
     ldout(cct, 1) << __func__ << " existing " << existing << " already closed."
                   << dendl;
+    l.unlock();
     return send_server_ident();
   }
 
@@ -2564,6 +2651,7 @@ CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing)
         << dendl;
     existing->protocol->stop();
     existing->dispatch_queue->queue_reset(existing.get());
+    l.unlock();
     return send_server_ident();
   }
 
@@ -2642,14 +2730,11 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
   exproto->pre_auth.enabled = false;
 
   if (!reconnecting) {
-    exproto->peer_supported_features = peer_supported_features;
-    exproto->tx_frame_asm.set_is_rev1(tx_frame_asm.get_is_rev1());
-    exproto->rx_frame_asm.set_is_rev1(rx_frame_asm.get_is_rev1());
-
     exproto->client_cookie = client_cookie;
     exproto->peer_name = peer_name;
     exproto->connection_features = connection_features;
     existing->set_features(connection_features);
+    exproto->peer_supported_features = peer_supported_features;
   }
   exproto->peer_global_seq = peer_global_seq;
 
@@ -2661,7 +2746,9 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
   // this happens in the event center's thread as there should be
   // no user outside its boundaries (simlarly to e.g. outgoing_bl).
   auto temp_stream_handlers = std::move(session_stream_handlers);
+  auto temp_compression_handlers = std::move(session_compression_handlers);
   exproto->auth_meta = auth_meta;
+  exproto->comp_meta = comp_meta;
 
   ldout(messenger->cct, 5) << __func__ << " stop myself to swap existing"
                            << dendl;
@@ -2690,7 +2777,11 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
         new_worker,
         new_center,
         exproto,
-        temp_stream_handlers=std::move(temp_stream_handlers)
+        reconnecting=reconnecting,
+        tx_is_rev1=tx_frame_asm.get_is_rev1(),
+        rx_is_rev1=rx_frame_asm.get_is_rev1(),
+        temp_stream_handlers=std::move(temp_stream_handlers),
+        temp_compression_handlers=std::move(temp_compression_handlers)
       ](ConnectedSocket &cs) mutable {
         // we need to delete time event in original thread
         {
@@ -2705,6 +2796,11 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
           existing->outgoing_bl.clear();
           existing->open_write = false;
           exproto->session_stream_handlers = std::move(temp_stream_handlers);
+          exproto->session_compression_handlers = std::move(temp_compression_handlers);
+          if (!reconnecting) {
+            exproto->tx_frame_asm.set_is_rev1(tx_is_rev1);
+            exproto->rx_frame_asm.set_is_rev1(rx_is_rev1);
+          }
           existing->write_lock.unlock();
           if (exproto->state == NONE) {
             existing->shutdown_socket();
@@ -2712,6 +2808,7 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
             existing->worker->references--;
             new_worker->references++;
             existing->logger = new_worker->get_perf_counter();
+            existing->labeled_logger = new_worker->get_labeled_perf_counter();
             existing->worker = new_worker;
             existing->center = new_center;
             if (existing->delay_state)
@@ -2891,4 +2988,47 @@ CtPtr ProtocolV2::send_reconnect_ok() {
   INTERCEPT(14);
 
   return WRITE(reconnect_ok, "reconnect ok", server_ready);
+}
+
+
+CtPtr ProtocolV2::handle_compression_request(ceph::bufferlist &payload) {
+  if (state != COMPRESSION_ACCEPTING) {
+    lderr(cct) << __func__ << " state changed!" << dendl;
+    return _fault();
+  }
+
+  auto request = CompressionRequestFrame::Decode(payload);
+  ldout(cct, 10) << __func__ << " CompressionRequestFrame(is_compress=" << request.is_compress()
+		 << ", preferred_methods=" << request.preferred_methods() << ")" << dendl;
+
+  const int peer_type = connection->get_peer_type();
+  if (Compressor::CompressionMode mode = messenger->comp_registry.get_mode(
+        peer_type, auth_meta->is_mode_secure());
+      mode != Compressor::COMP_NONE && request.is_compress()) {
+    comp_meta.con_method = messenger->comp_registry.pick_method(peer_type, request.preferred_methods());
+    ldout(cct, 10) << __func__ << " Compressor(pick_method=" 
+                   << Compressor::get_comp_alg_name(comp_meta.get_method())
+                   << ")" << dendl;
+    if (comp_meta.con_method != Compressor::COMP_ALG_NONE) {
+      comp_meta.con_mode = mode;
+    }
+  } else {
+    comp_meta.con_method = Compressor::COMP_ALG_NONE;
+  }
+  
+  auto response = CompressionDoneFrame::Encode(comp_meta.is_compress(), comp_meta.get_method());
+
+  INTERCEPT(20);
+  return WRITE(response, "compression done", finish_compression);
+}
+
+CtPtr ProtocolV2::finish_compression() {
+  // TODO: having a possibility to check whether we're server or client could
+  // allow reusing finish_compression().
+  
+  session_compression_handlers = ceph::compression::onwire::rxtx_t::create_handler_pair(
+    cct, comp_meta, messenger->comp_registry.get_min_compression_size(connection->get_peer_type()));
+
+  state = SESSION_ACCEPTING;
+  return CONTINUE(read_frame);
 }

@@ -20,12 +20,20 @@
  *
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#include <chrono>
+#include <string>
+#include <boost/asio/ip/address_v4.hpp>
+#include <fmt/core.h>
+module seastar;
+#else
 #include <seastar/net/ip.hh>
 #include <seastar/core/print.hh>
-#include <seastar/core/future-util.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/net/toeplitz.hh>
 #include <seastar/core/metrics.hh>
+#endif
 
 namespace seastar {
 
@@ -36,14 +44,10 @@ ipv4_address::ipv4_address(const std::string& addr) {
     auto ipv4 = boost::asio::ip::address_v4::from_string(addr, ec);
     if (ec) {
         throw std::runtime_error(
-            format("Wrong format for IPv4 address {}. Please ensure it's in dotted-decimal format", addr));
+            fmt::format("Wrong format for IPv4 address {}. Please ensure it's in dotted-decimal format", addr));
     }
     ip = static_cast<uint32_t>(std::move(ipv4).to_ulong());
 }
-
-constexpr std::chrono::seconds ipv4::_frag_timeout;
-constexpr uint32_t ipv4::_frag_low_thresh;
-constexpr uint32_t ipv4::_frag_high_thresh;
 
 ipv4::ipv4(interface* netif)
     : _netif(netif)
@@ -72,7 +76,7 @@ ipv4::ipv4(interface* netif)
         //
         // Linearized events: DERIVE:0:u
         //
-        sm::make_derive("linearizations", [] { return ipv4_packet_merger::linearizations(); },
+        sm::make_counter("linearizations", [] { return ipv4_packet_merger::linearizations(); },
                         sm::description("Counts a number of times a buffer linearization was invoked during buffers merge process. "
                                         "Divide it by a total IPv4 receive packet rate to get an average number of lineraizations per packet."))
     });
@@ -187,23 +191,27 @@ ipv4::handle_received_packet(packet p, ethernet_address from) {
             auto dropped_size = frag.mem_size;
             auto& ip_data = frag.data.map.begin()->second;
             // Choose a cpu to forward this packet
-            auto cpu_id = engine().cpu_id();
+            auto cpu_id = this_shard_id();
             auto l4 = _l4[h.ip_proto];
             if (l4) {
-                size_t l4_offset = 0;
-                forward_hash hash_data;
-                hash_data.push_back(hton(h.src_ip.ip));
-                hash_data.push_back(hton(h.dst_ip.ip));
-                auto forwarded = l4->forward(hash_data, ip_data, l4_offset);
-                if (forwarded) {
-                    cpu_id = _netif->hash2cpu(toeplitz_hash(_netif->rss_key(), hash_data));
-                    // No need to forward if the dst cpu is the current cpu
-                    if (cpu_id == engine().cpu_id()) {
-                        l4->received(std::move(ip_data), h.src_ip, h.dst_ip);
-                    } else {
-                        auto to = _netif->hw_address();
-                        auto pkt = frag.get_assembled_packet(from, to);
-                        _netif->forward(cpu_id, std::move(pkt));
+                if (smp::count == 1) {
+                    l4->received(std::move(ip_data), h.src_ip, h.dst_ip);
+                } else {
+                    size_t l4_offset = 0;
+                    forward_hash hash_data;
+                    hash_data.push_back(hton(h.src_ip.ip));
+                    hash_data.push_back(hton(h.dst_ip.ip));
+                    auto forwarded = l4->forward(hash_data, ip_data, l4_offset);
+                    if (forwarded) {
+                        cpu_id = _netif->hash2cpu(toeplitz_hash(_netif->rss_key(), hash_data));
+                        // No need to forward if the dst cpu is the current cpu
+                        if (cpu_id == this_shard_id()) {
+                            l4->received(std::move(ip_data), h.src_ip, h.dst_ip);
+                        } else {
+                            auto to = _netif->hw_address();
+                            auto pkt = frag.get_assembled_packet(from, to);
+                            _netif->forward(cpu_id, std::move(pkt));
+                        }
                     }
                 }
             }
@@ -299,7 +307,7 @@ void ipv4::send(ipv4_address to, ip_protocol_num proto_num, packet p, ethernet_a
     }
 }
 
-compat::optional<l3_protocol::l3packet> ipv4::get_packet() {
+std::optional<l3_protocol::l3packet> ipv4::get_packet() {
     // _packetq will be mostly empty here unless it hold remnants of previously
     // fragmented packet
     if (_packetq.empty()) {
@@ -316,7 +324,7 @@ compat::optional<l3_protocol::l3packet> ipv4::get_packet() {
         }
     }
 
-    compat::optional<l3_protocol::l3packet> p;
+    std::optional<l3_protocol::l3packet> p;
     if (!_packetq.empty()) {
         p = std::move(_packetq.front());
         _packetq.pop_front();

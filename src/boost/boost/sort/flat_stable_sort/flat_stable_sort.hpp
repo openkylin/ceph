@@ -13,6 +13,14 @@
 #ifndef __BOOST_SORT_FLAT_STABLE_SORT_HPP
 #define __BOOST_SORT_FLAT_STABLE_SORT_HPP
 
+#include <ciso646>
+#include <cstdlib>
+#include <functional>
+#include <iterator>
+#include <memory>
+#include <type_traits>
+#include <vector>
+
 #include <boost/sort/insert_sort/insert_sort.hpp>
 #include <boost/sort/common/util/insert.hpp>
 #include <boost/sort/common/merge_block.hpp>
@@ -21,12 +29,7 @@
 #include <boost/sort/common/util/traits.hpp>
 #include <boost/sort/common/indirect.hpp>
 
-#include <cstdlib>
-#include <functional>
-#include <iterator>
-#include <memory>
-#include <type_traits>
-#include <vector>
+
 
 namespace boost
 {
@@ -179,7 +182,7 @@ bool flat_stable_sort <Iter_t, Compare, Power2>
     size_t nblock = size_t(itx_last - itx_first);
     range_it rng = get_group_range(*itx_first, nblock);
     size_t nelem = rng.size();
-    size_t min_process = std::max(BLOCK_SIZE, (nelem >> 3));
+    size_t min_process = (std::max)(BLOCK_SIZE, (nelem >> 3));
 
     size_t nsorted1 = bsc::number_stable_sorted_forward (rng.first, rng.last,
                                                          min_process, cmp);
@@ -221,7 +224,7 @@ bool flat_stable_sort <Iter_t, Compare, Power2>
     range_it rng = get_group_range(*itx_first, nblock);
 
     size_t nelem = rng.size();
-    size_t min_process = std::max(BLOCK_SIZE, (nelem >> 3));
+    size_t min_process = (std::max)(BLOCK_SIZE, (nelem >> 3));
 
     size_t nsorted2 = bsc::number_stable_sorted_backward(rng.first, rng.last,
                                                          min_process, cmp);
@@ -299,7 +302,7 @@ inline void indirect_flat_stable_sort (Iter_t first, Iter_t last,
                                            Compare comp = Compare())
 {
     typedef typename std::vector<Iter_t>::iterator itx_iter;
-    typedef common::less_ptr_no_null<Iter_t, Compare> itx_comp;
+    typedef common::less_ptr_no_null <Iter_t, Compare> itx_comp;
     common::indirect_sort ( flat_stable_sort<itx_iter, itx_comp>,
                             first, last, comp);
 };

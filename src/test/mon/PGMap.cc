@@ -1,4 +1,4 @@
-// -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
@@ -16,6 +16,7 @@
 
 #include "include/stringify.h"
 
+using namespace std;
 
 namespace {
   class CheckTextTable : public TextTable {

@@ -1,17 +1,5 @@
-ceph (15.2.17-ok2) nile; urgency=medium
+ceph (19.2.0-ok1) nile; urgency=medium
 
-  * No-change rebuild.
+  * Build for openKylin.
 
- -- zhouganqing <zhouganqing@kylinos.cn>  Thu, 21 Dec 2023 10:47:39 +0800
-
-ceph (15.2.17-ok1build1) yangtze; urgency=medium
-
-  * update changelog
-
- -- Cong Liu <liucong2@kylinos.cn>  Fri, 18 Nov 2022 09:36:12 +0800
-
-ceph (15.2.17-ok1) yangtze; urgency=medium
-
-  * rebuild source for openKylin
-
- -- Cong Liu <liucong2@kylinos.cn>  Tue, 15 Nov 2022 17:19:38 +0800
+ -- liwenjun <liwenjun@kylinos.cn>  Fri, 14 Jun 2024 09:29:00 +0800

@@ -23,6 +23,7 @@
 #include "auth/KeyRing.h"
 #include "auth/cephx/CephxKeyServer.h"
 #include "global/global_init.h"
+#include "include/scope_guard.h"
 #include "include/stringify.h"
 #include "mgr/mgr_commands.h"
 #include "mon/AuthMonitor.h"
@@ -37,13 +38,15 @@
 
 namespace po = boost::program_options;
 
+using namespace std;
+
 class TraceIter {
   int fd;
   unsigned idx;
   MonitorDBStore::TransactionRef t;
 public:
   explicit TraceIter(string fname) : fd(-1), idx(-1) {
-    fd = ::open(fname.c_str(), O_RDONLY);
+    fd = ::open(fname.c_str(), O_RDONLY|O_BINARY);
     t.reset(new MonitorDBStore::Transaction);
   }
   bool valid() {
@@ -207,6 +210,8 @@ void usage(const char *n, po::options_description &d)
   << "                                  (default: last committed)\n"
   << "  get crushmap [-- options]       get crushmap (version VER if specified)\n"
   << "                                  (default: last committed)\n"
+  << "  get-key PREFIX KEY [-- options] get key\n"
+  << "  remove-key PREFIX KEY           remove key\n"
   << "  show-versions [-- options]      show the first&last committed version of map\n"
   << "                                  (show-versions -- --help for more info)\n"
   << "  dump-keys                       dumps store keys to FILE\n"
@@ -229,6 +234,7 @@ void usage(const char *n, po::options_description &d)
     << "\nPlease Note:\n"
     << "* Ceph-specific options should be in the format --option-name=VAL\n"
     << "  (specifically, do not forget the '='!!)\n"
+    << "  e.g., 'dump-keys --debug-rocksdb=0'\n"
     << "* Command-specific options need to be passed after a '--'\n"
     << "  e.g., 'get monmap -- --version 10 --out /tmp/foo'"
     << std::endl;
@@ -487,6 +493,20 @@ static int update_auth(MonitorDBStore& st, const string& keyring_path)
 	 << " with caps(" << caps << ")" << std::endl;
     auth_inc.op = KeyServerData::AUTH_INC_ADD;
 
+    AuthMonitor::Incremental inc;
+    inc.inc_type = AuthMonitor::AUTH_DATA;
+    encode(auth_inc, inc.auth_data);
+    inc.auth_type = CEPH_AUTH_CEPHX;
+    inc.encode(bl, CEPH_FEATURES_ALL);
+  }
+
+  // prime rotating secrets
+  {
+    KeyServer ks(g_ceph_context, nullptr);
+    KeyServerData::Incremental auth_inc;
+    auth_inc.op = KeyServerData::AUTH_INC_SET_ROTATING;
+    bool r = ks.prepare_rotating_update(auth_inc.rotating_bl);
+    ceph_assert(r);
     AuthMonitor::Incremental inc;
     inc.inc_type = AuthMonitor::AUTH_DATA;
     encode(auth_inc, inc.auth_data);
@@ -836,6 +856,10 @@ int main(int argc, char **argv) {
     }
   }
 
+  auto close_store = make_scope_guard([&] {
+    st.close();
+  });
+
   if (cmd == "dump-keys") {
     KeyValueDB::WholeSpaceIterator iter = st.get_iterator();
     while (iter->valid()) {
@@ -874,14 +898,12 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help") || map_type.empty()) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (v == 0) {
@@ -894,21 +916,20 @@ int main(int argc, char **argv) {
 
     int fd = STDOUT_FILENO;
     if (!outpath.empty()){
-      fd = ::open(outpath.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0666);
+      fd = ::open(outpath.c_str(), O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0666);
       if (fd < 0) {
         std::cerr << "error opening output file: "
           << cpp_strerror(errno) << std::endl;
-        err = EINVAL;
-        goto done;
+        return EINVAL;
       }
     }
 
-    BOOST_SCOPE_EXIT((&r) (&fd) (&outpath)) {
+    auto close_fd = make_scope_guard([&] {
       ::close(fd);
       if (r < 0 && fd != STDOUT_FILENO) {
         ::remove(outpath.c_str());
       }
-    } BOOST_SCOPE_EXIT_END
+    });
 
     bufferlist bl;
     r = 0;
@@ -927,8 +948,7 @@ int main(int argc, char **argv) {
     }
     if (r < 0) {
       std::cerr << "Error getting map: " << cpp_strerror(r) << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("readable")) {
@@ -942,7 +962,7 @@ int main(int argc, char **argv) {
         } else if (map_type == "osdmap") {
           OSDMap osdmap;
           osdmap.decode(bl);
-          osdmap.print(ss);
+          osdmap.print(cct.get(), ss);
         } else if (map_type == "mdsmap") {
           FSMap fs_map;
           fs_map.decode(bl);
@@ -967,7 +987,7 @@ int main(int argc, char **argv) {
         }
       } catch (const buffer::error &err) {
         std::cerr << "Could not decode for human readable output (you may still"
-                     " use non-readable mode).  Detail: " << err << std::endl;
+	  " use non-readable mode).  Detail: " << err.what() << std::endl;
       }
 
       out.append(ss);
@@ -980,6 +1000,103 @@ int main(int argc, char **argv) {
       std::cout << "wrote " << map_type
                 << " version " << v << " to " << outpath
                 << std::endl;
+    }
+} else if (cmd == "get-key") {
+    string outpath;
+    string prefix;
+    string key;
+
+    // visible options for this command
+    po::options_description op_desc("Allowed 'get-key' options");
+    op_desc.add_options()
+      ("help,h", "produce this help message")
+      ("out,o", po::value<string>(&outpath),
+       "output file (default: stdout)")
+      ("readable,r", "print the map information in human readable format")
+      ;
+    // this is going to be a positional argument; we don't want to show
+    // it as an option during --help, but we do want to have it captured
+    // when parsing.
+    po::options_description hidden_op_desc("Hidden 'get-key' options");
+    hidden_op_desc.add_options()
+      ("prefix", po::value<string>(&prefix),"prefix")
+      ("key", po::value<string>(&key),"key")
+      ;
+    po::positional_options_description op_positional;
+    op_positional.add("prefix", 1);
+    op_positional.add("key", 1);
+
+
+    po::variables_map op_vm;
+    int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
+                           subcmds, &op_vm);
+    if (r < 0) {
+      return -r;
+    }
+
+    if (op_vm.count("help") || prefix.empty()) {
+      usage(argv[0], op_desc);
+      return 0;
+    }
+
+    int fd = STDOUT_FILENO;
+    if (!outpath.empty()){
+      fd = ::open(outpath.c_str(), O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0666);
+      if (fd < 0) {
+        std::cerr << "error opening output file: "
+          << cpp_strerror(errno) << std::endl;
+        return EINVAL;
+      }
+    }
+
+    auto close_fd = make_scope_guard([&] {
+      ::close(fd);
+      if (r < 0 && fd != STDOUT_FILENO) {
+        ::remove(outpath.c_str());
+      }
+    });
+    bufferlist bl;
+    r = 0;
+    std::cout << prefix << " " << key << std::endl;
+    r = st.get(prefix, key, bl);
+    if (r < 0) {
+      std::cerr << "Error getting key: " << cpp_strerror(r) << std::endl;
+      return EINVAL;
+    }
+
+    if (op_vm.count("readable")) {
+      try {
+        if (prefix == "osd_snap") {
+          auto p = bl.cbegin();
+          if (key.starts_with("purged_epoch_")) {
+            map<int64_t,snap_interval_set_t> val;
+            ceph::decode(val, p);
+            std::cout << val << std::endl;
+          } else if (key.starts_with("purged_snap_")) {
+            snapid_t first_snap, end_snap;
+            epoch_t epoch;
+            ceph::decode(first_snap, p);
+            ceph::decode(end_snap, p);
+            ceph::decode(epoch, p);
+            std::cout << "first_snap:" << first_snap
+                      << " end_snap: " << end_snap
+                      << " epoch: " << epoch
+                      << std::endl;
+          }
+        } else {
+          std::cerr << "This type of readable key does not exist: " << prefix
+                    << std::endl << "You can only specify[osd_snap]" << std::endl;
+        }
+      } catch (const buffer::error &err) {
+        std::cerr << "Could not decode for human readable output (you may still"
+	  " use non-readable mode).  Detail: " << err.what() << std::endl;
+      }
+    }
+
+    bl.write_fd(fd);
+
+    if (!outpath.empty()) {
+      std::cout << "wrote " << prefix << " " <<  key <<  " to " << outpath << std::endl;
     }
   } else if (cmd == "show-versions") {
     string map_type; //map type:osdmap,monmap...
@@ -996,14 +1113,12 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, NULL, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help") || map_type.empty()) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return  0;
     }
 
     unsigned int v_first = 0;
@@ -1029,22 +1144,19 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, NULL, NULL,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (dstart > dstop) {
       std::cerr << "error: 'start' version (value: " << dstart << ") "
                 << " is greater than 'end' version (value: " << dstop << ")"
                 << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     version_t v = dstart;
@@ -1092,28 +1204,24 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (outpath.empty()) {
       usage(argv[0], op_desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (dstart > dstop) {
       std::cerr << "error: 'start' version (value: " << dstart << ") "
                 << " is greater than 'stop' version (value: " << dstop << ")"
                 << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     TraceIter iter(outpath.c_str());
@@ -1168,20 +1276,17 @@ int main(int argc, char **argv) {
       po::notify(op_vm);
     } catch (po::error &e) {
       std::cerr << "error: " << e.what() << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (inpath.empty()) {
       usage(argv[0], op_desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     unsigned num = 0;
@@ -1221,14 +1326,12 @@ int main(int argc, char **argv) {
       po::notify(op_vm);
     } catch (po::error &e) {
       std::cerr << "error: " << e.what() << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     unsigned num = 0;
@@ -1251,8 +1354,7 @@ int main(int argc, char **argv) {
   } else if (cmd == "store-copy") {
     if (subcmds.size() < 1 || subcmds[0].empty()) {
       usage(argv[0], desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     string out_path = subcmds[0];
@@ -1263,7 +1365,7 @@ int main(int argc, char **argv) {
       int r = out_store.create_and_open(ss);
       if (r < 0) {
         std::cerr << ss.str() << std::endl;
-        goto done;
+        return err;
       }
     }
 
@@ -1309,13 +1411,35 @@ int main(int argc, char **argv) {
     err = rewrite_crush(argv[0], subcmds, st);
   } else if (cmd == "rebuild") {
     err = rebuild_monstore(argv[0], subcmds, st);
+  } else if (cmd == "remove-key") {
+    string prefix, key;
+    // No visible options for this command
+    po::options_description op_desc("Allowed 'get' options");
+    po::options_description hidden_op_desc("Hidden 'get' options");
+    hidden_op_desc.add_options()
+      ("prefix", po::value<string>(&prefix),"prefix")
+      ("key", po::value<string>(&key),"key")
+      ;
+    po::positional_options_description op_positional;
+    op_positional.add("prefix", 1);
+    op_positional.add("key", 1);
+
+    po::variables_map op_vm;
+    int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
+                           subcmds, &op_vm);
+    if (r < 0) {
+      return -r;
+    }
+    r = st.clear_key(prefix, key);
+    if (r < 0) {
+      std::cerr << "error removing ("
+                << prefix << "," << key << ")"
+                << std::endl;
+      return r;
+    }
   } else {
     std::cerr << "Unrecognized command: " << cmd << std::endl;
     usage(argv[0], desc);
-    goto done;
+    return err;
   }
-
-  done:
-  st.close();
-  return err;
 }

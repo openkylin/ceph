@@ -24,9 +24,13 @@
 #include <numeric>
 #include <iostream>
 #include <seastar/core/alien.hh>
+#include <seastar/core/smp.hh>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/posix.hh>
 #include <seastar/core/reactor.hh>
+#include <seastar/util/later.hh>
+#include <stdexcept>
+#include <tuple>
 
 using namespace seastar;
 
@@ -41,37 +45,48 @@ int main(int argc, char** argv)
     // and on which, a seastar future can wait.
     int engine_ready_fd = eventfd(0, 0);
     auto alien_done = file_desc::eventfd(0, 0);
+    seastar::app_template app;
 
     // use the raw fd, because seastar engine want to take over the fds, if it
     // polls on them.
-    auto zim = std::async([engine_ready_fd,
+    auto zim = std::async([&app, engine_ready_fd,
                            alien_done=alien_done.get()] {
         eventfd_t result = 0;
         // wait until the seastar engine is ready
         int r = ::eventfd_read(engine_ready_fd, &result);
         if (r < 0) {
-            return -EINVAL;
+            throw std::runtime_error("failed to wait for seastar engine");
         }
         if (result != ENGINE_READY) {
-            return -EINVAL;
+            throw std::runtime_error("seastar failed to sent us the ready message");
         }
+        // test for alien::run_on()
+        std::promise<char> question;
+        auto answer = question.get_future();
+        alien::run_on(app.alien(), 0, [&question]() noexcept {
+            question.set_value('*');
+        });
+        // test for alien::submit_to(), which returns a std::future<int>
         std::vector<std::future<int>> counts;
         for (auto i : boost::irange(0u, smp::count)) {
             // send messages from alien.
-            counts.push_back(alien::submit_to(i, [i] {
+            counts.push_back(alien::submit_to(app.alien(), i, [i] {
                 return seastar::make_ready_future<int>(i);
             }));
         }
+        // test for alien::submit_to(), which returns a std::future<void>
+        alien::submit_to(app.alien(), 0, [] {
+            return seastar::make_ready_future<>();
+        }).wait();
         int total = 0;
         for (auto& count : counts) {
             total += count.get();
         }
         // i am done. dismiss the engine
         ::eventfd_write(alien_done, ALIEN_DONE);
-        return total;
+        return std::make_tuple(answer.get(), total);
     });
 
-    seastar::app_template app;
     eventfd_t result = 0;
     app.run(argc, argv, [&] {
         return seastar::now().then([engine_ready_fd] {
@@ -100,7 +115,11 @@ int main(int argc, char** argv)
             seastar::engine().exit(0);
         });
     });
-    int total = zim.get();
+    auto [everything, total] = zim.get();
+    if (char expected = '*'; everything != '*') {
+        std::cerr << "Bad everything: " << everything << " != " << expected << std::endl;
+        return 1;
+    }
     const auto shards = boost::irange(0u, smp::count);
     auto expected = std::accumulate(std::begin(shards), std::end(shards), 0);
     if (total != expected) {

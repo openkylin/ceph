@@ -2,34 +2,27 @@ import { Component, OnInit } from '@angular/core';
 import { ValidatorFn, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BlockUI, NgBlockUI } from 'ng-block-ui';
+import _ from 'lodash';
 import { forkJoin as observableForkJoin } from 'rxjs';
 
-import { MgrModuleService } from '../../../shared/api/mgr-module.service';
-import { TelemetryService } from '../../../shared/api/telemetry.service';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { TelemetryNotificationService } from '../../../shared/services/telemetry-notification.service';
-import { TextToDownloadService } from '../../../shared/services/text-to-download.service';
+import { MgrModuleService } from '~/app/shared/api/mgr-module.service';
+import { TelemetryService } from '~/app/shared/api/telemetry.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { TelemetryNotificationService } from '~/app/shared/services/telemetry-notification.service';
 
 @Component({
   selector: 'cd-telemetry',
   templateUrl: './telemetry.component.html',
   styleUrls: ['./telemetry.component.scss']
 })
-export class TelemetryComponent implements OnInit {
-  @BlockUI()
-  blockUI: NgBlockUI;
-
-  error = false;
+export class TelemetryComponent extends CdForm implements OnInit {
   configForm: CdFormGroup;
   licenseAgrmt = false;
-  loading = false;
   moduleEnabled: boolean;
   options: Object = {};
   newConfig: Object = {};
@@ -40,6 +33,7 @@ export class TelemetryComponent implements OnInit {
     'channel_crash',
     'channel_device',
     'channel_ident',
+    'channel_perf',
     'interval',
     'proxy',
     'contact',
@@ -55,18 +49,18 @@ export class TelemetryComponent implements OnInit {
   showContactInfo: boolean;
 
   constructor(
+    public actionLabels: ActionLabelsI18n,
     private formBuilder: CdFormBuilder,
     private mgrModuleService: MgrModuleService,
     private notificationService: NotificationService,
     private router: Router,
     private telemetryService: TelemetryService,
-    private i18n: I18n,
-    private textToDownloadService: TextToDownloadService,
     private telemetryNotificationService: TelemetryNotificationService
-  ) {}
+  ) {
+    super();
+  }
 
   ngOnInit() {
-    this.loading = true;
     const observables = [
       this.mgrModuleService.getOptions('telemetry'),
       this.mgrModuleService.getConfig('telemetry')
@@ -82,10 +76,10 @@ export class TelemetryComponent implements OnInit {
         this.configResp = _.pick(configResp, this.requiredFields);
         this.createConfigForm();
         this.configForm.setValue(this.configResp);
-        this.loading = false;
+        this.loadingReady();
       },
       (_error) => {
-        this.error = true;
+        this.loadingError();
       }
     );
   }
@@ -98,9 +92,71 @@ export class TelemetryComponent implements OnInit {
     this.configForm = this.formBuilder.group(controlsConfig);
   }
 
+  private replacer(key: string, value: any) {
+    // Display the arrays of keys 'ranges' and 'values' horizontally as they take up too much space
+    // and Stringify displays it in vertical by default.
+    if ((key === 'ranges' || key === 'values') && Array.isArray(value)) {
+      const elements = [];
+      for (let i = 0; i < value.length; i++) {
+        elements.push(JSON.stringify(value[i]));
+      }
+      return elements;
+    }
+    // Else, just return the value as is, without any formatting.
+    return value;
+  }
+
+  replacerTest(report: object) {
+    return JSON.stringify(report, this.replacer, 2);
+  }
+
+  private formatReport() {
+    let copy = {};
+    copy = JSON.parse(JSON.stringify(this.report));
+    const perf_keys = [
+      'perf_counters',
+      'stats_per_pool',
+      'stats_per_pg',
+      'io_rate',
+      'osd_perf_histograms',
+      'mempool',
+      'heap_stats',
+      'rocksdb_stats'
+    ];
+    for (let i = 0; i < perf_keys.length; i++) {
+      const key = perf_keys[i];
+      if (key in copy['report']) {
+        delete copy['report'][key];
+      }
+    }
+    return JSON.stringify(copy, null, 2);
+  }
+
+  formatReportTest(report: object) {
+    let copy = {};
+    copy = JSON.parse(JSON.stringify(report));
+    const perf_keys = [
+      'perf_counters',
+      'stats_per_pool',
+      'stats_per_pg',
+      'io_rate',
+      'osd_perf_histograms',
+      'mempool',
+      'heap_stats',
+      'rocksdb_stats'
+    ];
+    for (let i = 0; i < perf_keys.length; i++) {
+      const key = perf_keys[i];
+      if (key in copy) {
+        delete copy[key];
+      }
+    }
+    return JSON.stringify(copy, null, 2);
+  }
+
   private createPreviewForm() {
     const controls = {
-      report: JSON.stringify(this.report, null, 2),
+      report: this.formatReport(),
       reportId: this.reportId,
       licenseAgrmt: [this.licenseAgrmt, Validators.requiredTrue]
     };
@@ -111,14 +167,7 @@ export class TelemetryComponent implements OnInit {
     const result = [];
     switch (option.type) {
       case 'int':
-        result.push(CdValidators.number());
         result.push(Validators.required);
-        if (_.isNumber(option.min)) {
-          result.push(Validators.min(option.min));
-        }
-        if (_.isNumber(option.max)) {
-          result.push(Validators.max(option.max));
-        }
         break;
       case 'str':
         if (_.isNumber(option.min)) {
@@ -150,18 +199,19 @@ export class TelemetryComponent implements OnInit {
   }
 
   private getReport() {
-    this.loading = true;
+    this.loadingStart();
+
     this.telemetryService.getReport().subscribe(
       (resp: object) => {
         this.report = resp;
         this.reportId = resp['report']['report_id'];
         this.updateReportFromConfig(this.newConfig);
         this.createPreviewForm();
-        this.loading = false;
+        this.loadingReady();
         this.step++;
       },
       (_error) => {
-        this.error = true;
+        this.loadingError();
       }
     );
   }
@@ -189,10 +239,6 @@ export class TelemetryComponent implements OnInit {
       }
     }
     this.getReport();
-  }
-
-  download(report: object, fileName: string) {
-    this.textToDownloadService.download(JSON.stringify(report, null, 2), fileName);
   }
 
   disableModule(message: string = null, followUpFunc: Function = null) {
@@ -239,17 +285,15 @@ export class TelemetryComponent implements OnInit {
         this.telemetryNotificationService.setVisibility(false);
         this.notificationService.show(
           NotificationType.success,
-          this.i18n('The Telemetry module has been configured and activated successfully.')
+          $localize`The Telemetry module has been configured and activated successfully.`
         );
       },
       () => {
         this.telemetryNotificationService.setVisibility(false);
         this.notificationService.show(
           NotificationType.error,
-          this.i18n(
-            'An Error occurred while updating the Telemetry module configuration.\
-             Please Try again'
-          )
+          $localize`An Error occurred while updating the Telemetry module configuration.\
+             Please Try again`
         );
         // Reset the 'Update' button.
         this.previewForm.setErrors({ cdSubmitButton: true });

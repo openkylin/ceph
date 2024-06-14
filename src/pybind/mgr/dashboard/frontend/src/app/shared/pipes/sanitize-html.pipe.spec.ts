@@ -1,8 +1,8 @@
 import { TestBed } from '@angular/core/testing';
 import { DomSanitizer } from '@angular/platform-browser';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
-import { SanitizeHtmlPipe } from '../pipes/sanitize-html.pipe';
+import { SanitizeHtmlPipe } from '~/app/shared/pipes/sanitize-html.pipe';
+import { configureTestBed } from '~/testing/unit-test-helper';
 
 describe('SanitizeHtmlPipe', () => {
   let pipe: SanitizeHtmlPipe;
@@ -13,7 +13,7 @@ describe('SanitizeHtmlPipe', () => {
   });
 
   beforeEach(() => {
-    domSanitizer = TestBed.get(DomSanitizer);
+    domSanitizer = TestBed.inject(DomSanitizer);
     pipe = new SanitizeHtmlPipe(domSanitizer);
   });
 

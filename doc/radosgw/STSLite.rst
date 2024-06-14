@@ -35,15 +35,17 @@ Parameters:
     **TokenCode** (String/ Optional): The value provided by the MFA device, if MFA is required.
 
 An administrative user needs to attach a policy to allow invocation of GetSessionToken API using its permanent
-credentials and to allow subsequent s3 operations invocation using only the temporary credentials returned
+credentials and to allow subsequent S3 operations invocation using only the temporary credentials returned
 by GetSessionToken.
-The following is an example of attaching the policy to a user 'TESTER1'::
-
-    s3curl.pl --debug --id admin -- -s -v -X POST "http://localhost:8000/?Action=PutUserPolicy&PolicyName=Policy1&UserName=TESTER1&PolicyDocument=\{\"Version\":\"2012-10-17\",\"Statement\":\[\{\"Effect\":\"Deny\",\"Action\":\"s3:*\",\"Resource\":\[\"*\"\],\"Condition\":\{\"BoolIfExists\":\{\"sts:authentication\":\"false\"\}\}\},\{\"Effect\":\"Allow\",\"Action\":\"sts:GetSessionToken\",\"Resource\":\"*\",\"Condition\":\{\"BoolIfExists\":\{\"sts:authentication\":\"false\"\}\}\}\]\}&Version=2010-05-08"
 
 The user attaching the policy needs to have admin caps. For example::
 
     radosgw-admin caps add --uid="TESTER" --caps="user-policy=*"
+
+The following is the policy that needs to be attached to a user 'TESTER1'::
+
+    user_policy = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Deny\",\"Action\":\"s3:*\",\"Resource\":[\"*\"],\"Condition\":{\"BoolIfExists\":{\"sts:authentication\":\"false\"}}},{\"Effect\":\"Allow\",\"Action\":\"sts:GetSessionToken\",\"Resource\":\"*\",\"Condition\":{\"BoolIfExists\":{\"sts:authentication\":\"false\"}}}]}"
+
 
 STS Lite Configuration
 ======================
@@ -58,9 +60,9 @@ The above STS configurables can be used with the Keystone configurables if one
 needs to use STS Lite in conjunction with Keystone. The complete set of
 configurable options will be::
 
-  [client.radosgw.gateway]
-  rgw sts key = {sts key for encrypting/ decrypting the session token}
-  rgw s3 auth use sts = true
+  [client.{your-rgw-name}]
+  rgw_sts_key = {sts key for encrypting/ decrypting the session token, exactly 16 hex characters}
+  rgw_s3_auth_use_sts = true
 
   rgw keystone url = {keystone server url:keystone server admin port}
   rgw keystone admin project = {keystone admin project name}
@@ -79,9 +81,9 @@ The details of the integrating ldap with Ceph Object Gateway can be found here:
 
 The complete set of configurables to use STS Lite with LDAP are::
 
-  [client.radosgw.gateway]
-  rgw sts key = {sts key for encrypting/ decrypting the session token}
-  rgw s3 auth use sts = true
+  [client.{your-rgw-name}]
+  rgw_sts_key = {sts key for encrypting/ decrypting the session token, exactly 16 hex characters}
+  rgw_s3_auth_use_sts = true
 
   rgw_s3_auth_use_ldap = true
   rgw_ldap_uri = {LDAP server to use}
@@ -157,10 +159,10 @@ Keystone.
     bucket = s3client.create_bucket(Bucket='my-new-shiny-bucket')
     response = s3client.list_buckets()
     for bucket in response["Buckets"]:
-        print "{name}\t{created}".format(
+        print("{name}\t{created}".format(
                     name = bucket['Name'],
                     created = bucket['CreationDate'],
-    )
+        ))
 
 Similar steps can be performed for using GetSessionToken with LDAP.
 

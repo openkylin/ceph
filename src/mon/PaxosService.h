@@ -20,9 +20,6 @@
 #include "Monitor.h"
 #include "MonitorDBStore.h"
 
-class Monitor;
-class Paxos;
-
 /**
  * A Paxos Service is an abstraction that easily allows one to obtain an
  * association between a Monitor and a Paxos class, in order to implement any
@@ -37,16 +34,16 @@ class PaxosService {
   /**
    * The Monitor to which this class is associated with
    */
-  Monitor *mon;
+  Monitor &mon;
   /**
    * The Paxos instance to which this class is associated with
    */
-  Paxos *paxos;
+  Paxos &paxos;
   /**
    * Our name. This will be associated with the class implementing us, and will
    * be used mainly for store-related operations.
    */
-  string service_name;
+  std::string service_name;
   /**
    * If we are or have queued anything for proposal, this variable will be true
    * until our proposal has been finished.
@@ -85,7 +82,7 @@ protected:
   health_check_map_t health_checks;
 protected:
   /**
-   * format of our state in leveldb, 0 for default
+   * format of our state in RocksDB, 0 for default
    */
   version_t format_version;
 
@@ -125,7 +122,7 @@ public:
   };
 
   class C_ReplyOp : public C_MonOp {
-    Monitor *mon;
+    Monitor &mon;
     MonOpRequestRef op;
     MessageRef reply;
   public:
@@ -133,7 +130,7 @@ public:
       C_MonOp(o), mon(s->mon), op(o), reply(r) { }
     void _finish(int r) override {
       if (r >= 0) {
-	mon->send_reply(op, reply.detach());
+	mon.send_reply(op, reply.detach());
       }
     }
   };
@@ -147,7 +144,7 @@ public:
    * @param p A Paxos instance
    * @param name Our service's name.
    */
-  PaxosService(Monitor *mn, Paxos *p, string name) 
+  PaxosService(Monitor &mn, Paxos &p, std::string name) 
     : mon(mn), paxos(p), service_name(name),
       proposing(false),
       service_version(0), proposal_timer(0), have_pending(false),
@@ -166,12 +163,12 @@ public:
    *
    * @returns The service's name.
    */
-  const string& get_service_name() const { return service_name; }
+  const std::string& get_service_name() const { return service_name; }
 
   /**
    * Get the store prefixes we utilize
    */
-  virtual void get_store_prefixes(set<string>& s) const {
+  virtual void get_store_prefixes(std::set<std::string>& s) const {
     s.insert(service_name);
   }
   
@@ -324,7 +321,7 @@ public:
   virtual void create_pending() = 0;
 
   /**
-   * Encode the pending state into a bufferlist for ratification and
+   * Encode the pending state into a ceph::buffer::list for ratification and
    * transmission as the next state.
    *
    * @invariant This function is only called on a Leader.
@@ -361,8 +358,7 @@ public:
    * @invariant This function is only called on a Leader.
    *
    * @param m An update message
-   * @returns 'true' if the update message was handled (e.g., a command that
-   *	      went through); 'false' otherwise.
+   * @returns 'true' if the pending state should be proposed; 'false' otherwise.
    */
   virtual bool prepare_update(MonOpRequestRef op) = 0;
   /**
@@ -441,10 +437,11 @@ public:
 
   void encode_health(const health_check_map_t& next,
 		     MonitorDBStore::TransactionRef t) {
-    bufferlist bl;
+    using ceph::encode;
+    ceph::buffer::list bl;
     encode(next, bl);
     t->put("health", service_name, bl);
-    mon->log_health(next, health_checks, t);
+    mon.log_health(next, health_checks, t);
   }
   void load_health();
 
@@ -456,10 +453,10 @@ public:
    *					 mistakes.
    * @{
    */
-  const string last_committed_name;
-  const string first_committed_name;
-  const string full_prefix_name;
-  const string full_latest_name;
+  const std::string last_committed_name;
+  const std::string first_committed_name;
+  const std::string full_prefix_name;
+  const std::string full_latest_name;
   /**
    * @}
    */
@@ -482,11 +479,16 @@ public:
    */
 
   /**
+   * Callback list to be used for waiting for the next proposal to commit.
+   */
+  std::vector<Context*> waiting_for_commit;
+
+  /**
    * Callback list to be used whenever we are running a proposal through
    * Paxos. These callbacks will be awaken whenever the said proposal
-   * finishes.
+   * finishes **and** the PaxosService is active.
    */
-  list<Context*> waiting_for_finished_proposal;
+  std::vector<Context*> waiting_for_finished_proposal;
 
  public:
 
@@ -509,7 +511,7 @@ public:
   bool is_active() const {
     return
       !is_proposing() &&
-      (paxos->is_active() || paxos->is_updating() || paxos->is_writing());
+      (paxos.is_active() || paxos.is_updating() || paxos.is_writing());
   }
 
   /**
@@ -526,7 +528,7 @@ public:
    */
   bool is_readable(version_t ver = 0) const {
     if (ver > get_last_committed() ||
-	!paxos->is_readable(0) ||
+	!paxos.is_readable(0) ||
 	get_last_committed() == 0)
       return false;
     return true;
@@ -548,7 +550,21 @@ public:
   }
 
   /**
-   * Wait for a proposal to finish.
+   * Wait for a proposal to commit.
+   *
+   * Note: the proposal may not be signaled yet. This simply adds a context to
+   * be completed when the next proposal commits.
+   *
+   * @param c The callback to be awaken once the proposal is committed.
+   */
+  void wait_for_commit(MonOpRequestRef op, Context *c) {
+    if (op)
+      op->mark_event(service_name + ":wait_for_commit");
+    waiting_for_commit.push_back(c);
+  }
+
+  /**
+   * Wait for a proposal to finish and PaxosService to become active.
    *
    * Add a callback to be awaken whenever our current proposal finishes being
    * proposed through Paxos.
@@ -560,10 +576,7 @@ public:
       op->mark_event(service_name + ":wait_for_finished_proposal");
     waiting_for_finished_proposal.push_back(c);
   }
-  void wait_for_finished_proposal_ctx(Context *c) {
-    MonOpRequestRef o;
-    wait_for_finished_proposal(o, c);
-  }
+
 
   /**
    * Wait for us to become active
@@ -575,7 +588,7 @@ public:
       op->mark_event(service_name + ":wait_for_active");
 
     if (!is_proposing()) {
-      paxos->wait_for_active(op, c);
+      paxos.wait_for_active(op, c);
       return;
     }
     wait_for_finished_proposal(op, c);
@@ -609,7 +622,7 @@ public:
       if (op)
         op->mark_event(service_name + ":wait_for_readable/paxos");
 
-      paxos->wait_for_readable(op, c);
+      paxos.wait_for_readable(op, c);
     }
   }
 
@@ -632,7 +645,7 @@ public:
     else if (!is_writeable())
       wait_for_active(op, c);
     else
-      paxos->wait_for_writeable(op, c);
+      paxos.wait_for_writeable(op, c);
   }
   void wait_for_writeable_ctx(Context *c) {
     MonOpRequestRef o;
@@ -714,7 +727,7 @@ public:
    * @note This function is a wrapper for Paxos::cancel_events
    */
   void cancel_events() {
-    paxos->cancel_events();
+    paxos.cancel_events();
   }
 
   /**
@@ -753,10 +766,10 @@ public:
    *
    * @param t A transaction to which we will add this put operation
    * @param ver The version to which we will add the value
-   * @param bl A bufferlist containing the version's value
+   * @param bl A ceph::buffer::list containing the version's value
    */
   void put_version(MonitorDBStore::TransactionRef t, version_t ver,
-		   bufferlist& bl) {
+		   ceph::buffer::list& bl) {
     t->put(get_service_name(), ver, bl);
   }
   /**
@@ -765,11 +778,11 @@ public:
    *
    * @param t The transaction to which we will add this put operation
    * @param ver A version number
-   * @param bl A bufferlist containing the version's value
+   * @param bl A ceph::buffer::list containing the version's value
    */
   void put_version_full(MonitorDBStore::TransactionRef t,
-			version_t ver, bufferlist& bl) {
-    string key = mon->store->combine_strings(full_prefix_name, ver);
+			version_t ver, ceph::buffer::list& bl) {
+    std::string key = mon.store->combine_strings(full_prefix_name, ver);
     t->put(get_service_name(), key, bl);
   }
   /**
@@ -780,7 +793,7 @@ public:
    * @param ver A version number
    */
   void put_version_latest_full(MonitorDBStore::TransactionRef t, version_t ver) {
-    string key = mon->store->combine_strings(full_prefix_name, full_latest_name);
+    std::string key = mon.store->combine_strings(full_prefix_name, full_latest_name);
     t->put(get_service_name(), key, ver);
   }
   /**
@@ -788,10 +801,10 @@ public:
    *
    * @param t A transaction to which we will add this put operation
    * @param key The key to which we will add the value
-   * @param bl A bufferlist containing the value
+   * @param bl A ceph::buffer::list containing the value
    */
   void put_value(MonitorDBStore::TransactionRef t,
-		 const string& key, bufferlist& bl) {
+		 const std::string& key, ceph::buffer::list& bl) {
     t->put(get_service_name(), key, bl);
   }
 
@@ -803,7 +816,7 @@ public:
    * @param v An integer
    */
   void put_value(MonitorDBStore::TransactionRef t,
-		 const string& key, version_t v) {
+		 const std::string& key, version_t v) {
     t->put(get_service_name(), key, v);
   }
 
@@ -847,22 +860,22 @@ public:
    * Get the contents of a given version @p ver
    *
    * @param ver The version being obtained
-   * @param bl The bufferlist to be populated
+   * @param bl The ceph::buffer::list to be populated
    * @return 0 on success; <0 otherwise
    */
-  virtual int get_version(version_t ver, bufferlist& bl) {
-    return mon->store->get(get_service_name(), ver, bl);
+  virtual int get_version(version_t ver, ceph::buffer::list& bl) {
+    return mon.store->get(get_service_name(), ver, bl);
   }
   /**
    * Get the contents of a given full version of this service.
    *
    * @param ver A version number
-   * @param bl The bufferlist to be populated
+   * @param bl The ceph::buffer::list to be populated
    * @returns 0 on success; <0 otherwise
    */
-  virtual int get_version_full(version_t ver, bufferlist& bl) {
-    string key = mon->store->combine_strings(full_prefix_name, ver);
-    return mon->store->get(get_service_name(), key, bl);
+  virtual int get_version_full(version_t ver, ceph::buffer::list& bl) {
+    std::string key = mon.store->combine_strings(full_prefix_name, ver);
+    return mon.store->get(get_service_name(), key, bl);
   }
   /**
    * Get the latest full version number
@@ -870,26 +883,26 @@ public:
    * @returns A version number
    */
   version_t get_version_latest_full() {
-    string key = mon->store->combine_strings(full_prefix_name, full_latest_name);
-    return mon->store->get(get_service_name(), key);
+    std::string key = mon.store->combine_strings(full_prefix_name, full_latest_name);
+    return mon.store->get(get_service_name(), key);
   }
 
   /**
    * Get a value from a given key.
    *
    * @param[in] key The key
-   * @param[out] bl The bufferlist to be populated with the value
+   * @param[out] bl The ceph::buffer::list to be populated with the value
    */
-  int get_value(const string& key, bufferlist& bl) {
-    return mon->store->get(get_service_name(), key, bl);
+  int get_value(const std::string& key, ceph::buffer::list& bl) {
+    return mon.store->get(get_service_name(), key, bl);
   }
   /**
    * Get an integer value from a given key.
    *
    * @param[in] key The key
    */
-  version_t get_value(const string& key) {
-    return mon->store->get(get_service_name(), key);
+  version_t get_value(const std::string& key) {
+    return mon.store->get(get_service_name(), key);
   }
 
   /**
@@ -901,4 +914,3 @@ public:
 };
 
 #endif
-

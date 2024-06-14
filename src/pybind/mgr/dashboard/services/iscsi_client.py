@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=too-many-public-methods
-from __future__ import absolute_import
 
 import json
 import logging
@@ -12,10 +11,9 @@ try:
 except ImportError:
     from urllib.parse import urlparse
 
-from .iscsi_config import IscsiGatewaysConfig
-from ..settings import Settings
 from ..rest_client import RestClient
-
+from ..settings import Settings
+from .iscsi_config import IscsiGatewaysConfig
 
 logger = logging.getLogger('iscsi_client')
 

@@ -1,11 +1,9 @@
 import errno
 import json
 import logging
-from time import sleep
 
-from teuthology.exceptions import CommandFailedError
 
-from tasks.mgr.mgr_test_case import MgrTestCase
+from .mgr_test_case import MgrTestCase
 
 
 log = logging.getLogger(__name__)
@@ -125,8 +123,7 @@ data_devices:
         self._orch_cmd('daemon', 'add', 'rgw', 'realm', 'zone')
 
     def test_nfs_add(self):
-        self._orch_cmd('daemon', 'add', "nfs", "service_name", "pool", "--namespace", "ns")
-        self._orch_cmd('daemon', 'add', "nfs", "service_name", "pool")
+        self._orch_cmd('daemon', 'add', "nfs", "service_name")
 
     def test_osd_rm(self):
         self._orch_cmd('daemon', "rm", "osd.0", '--force')

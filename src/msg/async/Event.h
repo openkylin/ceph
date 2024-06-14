@@ -30,6 +30,10 @@
 #define HAVE_KQUEUE 1
 #endif
 
+#ifdef _WIN32
+#define HAVE_POLL 1
+#endif
+
 #ifdef __sun
 #include <sys/feature_tests.h>
 #ifdef _DTRACE_VERSION
@@ -76,7 +80,7 @@ class EventDriver {
   virtual int init(EventCenter *center, int nevent) = 0;
   virtual int add_event(int fd, int cur_mask, int mask) = 0;
   virtual int del_event(int fd, int cur_mask, int del_mask) = 0;
-  virtual int event_wait(vector<FiredFileEvent> &fired_events, struct timeval *tp) = 0;
+  virtual int event_wait(std::vector<FiredFileEvent> &fired_events, struct timeval *tp) = 0;
   virtual int resize_events(int newsize) = 0;
   virtual bool need_wakeup() { return true; }
 };
@@ -121,7 +125,7 @@ class EventCenter {
      */
   class Poller {
    public:
-    explicit Poller(EventCenter* center, const string& pollerName);
+    explicit Poller(EventCenter* center, const std::string& pollerName);
     virtual ~Poller();
 
     /**
@@ -142,7 +146,7 @@ class EventCenter {
     /// Human-readable string name given to the poller to make it
     /// easy to identify for debugging. For most pollers just passing
     /// in the subclass name probably makes sense.
-    string poller_name;
+    std::string poller_name;
 
     /// Index of this Poller in EventCenter::pollers.  Allows deletion
     /// without having to scan all the entries in pollers. -1 means
@@ -159,8 +163,8 @@ class EventCenter {
   pthread_t owner = 0;
   std::mutex external_lock;
   std::atomic_ulong external_num_events;
-  deque<EventCallbackRef> external_events;
-  vector<FileEvent> file_events;
+  std::deque<EventCallbackRef> external_events;
+  std::vector<FileEvent> file_events;
   EventDriver *driver;
   std::multimap<clock_type::time_point, TimeEvent> time_events;
   // Keeps track of all of the pollers currently defined.  We don't
@@ -171,7 +175,7 @@ class EventCenter {
   uint64_t time_event_next_id;
   int notify_receive_fd;
   int notify_send_fd;
-  NetHandler net;
+  ceph::NetHandler net;
   EventCallbackRef notify_handler;
   unsigned center_id;
   AssociatedCenters *global_centers = nullptr;
@@ -190,7 +194,7 @@ class EventCenter {
     notify_receive_fd(-1), notify_send_fd(-1), net(c),
     notify_handler(NULL), center_id(0) { }
   ~EventCenter();
-  ostream& _event_prefix(std::ostream *_dout);
+  std::ostream& _event_prefix(std::ostream *_dout);
 
   int init(int nevent, unsigned center_id, const std::string &type);
   void set_owner();
@@ -201,7 +205,7 @@ class EventCenter {
 
   // Used by internal thread
   int create_file_event(int fd, int mask, EventCallbackRef ctxt);
-  uint64_t create_time_event(uint64_t milliseconds, EventCallbackRef ctxt);
+  uint64_t create_time_event(uint64_t microseconds, EventCallbackRef ctxt);
   void delete_file_event(int fd, int mask);
   void delete_time_event(uint64_t id);
   int process_events(unsigned timeout_microseconds, ceph::timespan *working_dur = nullptr);

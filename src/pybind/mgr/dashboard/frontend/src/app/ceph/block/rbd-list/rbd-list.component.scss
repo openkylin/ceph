@@ -1,5 +1,5 @@
-@import 'defaults.scss';
+@use './src/styles/vendor/variables' as vv;
 
 .warn {
-  color: $color-bright-yellow;
+  color: vv.$warning;
 }

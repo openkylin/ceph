@@ -16,7 +16,7 @@
 #include "SimpleLock.h"
 #include "Mutation.h"
 
-void SimpleLock::dump(Formatter *f) const {
+void SimpleLock::dump(ceph::Formatter *f) const {
   ceph_assert(f != NULL);
   if (is_sync_and_unlocked()) {
     return;
@@ -31,13 +31,14 @@ void SimpleLock::dump(Formatter *f) const {
   f->close_section();
 
   f->dump_string("state", get_state_name(get_state()));
+  f->dump_string("type", get_lock_type_name(get_type()));
   f->dump_bool("is_leased", is_leased());
   f->dump_int("num_rdlocks", get_num_rdlocks());
   f->dump_int("num_wrlocks", get_num_wrlocks());
   f->dump_int("num_xlocks", get_num_xlocks());
   f->open_object_section("xlock_by");
-  if (get_xlock_by()) {
-    get_xlock_by()->dump(f);
+  if (auto mut = get_xlock_by(); mut) {
+    f->dump_object("reqid", mut->reqid);
   }
   f->close_section();
 }

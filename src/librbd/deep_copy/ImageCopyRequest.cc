@@ -4,12 +4,10 @@
 #include "ImageCopyRequest.h"
 #include "ObjectCopyRequest.h"
 #include "common/errno.h"
-#include "common/WorkQueue.h"
 #include "librbd/Utils.h"
+#include "librbd/asio/ContextWQ.h"
 #include "librbd/deep_copy/Handler.h"
 #include "librbd/deep_copy/Utils.h"
-#include "librbd/image/CloseRequest.h"
-#include "librbd/image/OpenRequest.h"
 #include "librbd/object_map/DiffRequest.h"
 #include "osdc/Striper.h"
 
@@ -41,6 +39,13 @@ ImageCopyRequest<I>::ImageCopyRequest(I *src_image_ctx, I *dst_image_ctx,
     m_flatten(flatten), m_object_number(object_number), m_snap_seqs(snap_seqs),
     m_handler(handler), m_on_finish(on_finish), m_cct(dst_image_ctx->cct),
     m_lock(ceph::make_mutex(unique_lock_name("ImageCopyRequest::m_lock", this))) {
+
+    ldout(m_cct, 20) << "src_image_id=" << m_src_image_ctx->id
+		     << ", dst_image_id=" << m_dst_image_ctx->id
+	             << ", src_snap_id_start=" << m_src_snap_id_start
+                     << ", src_snap_id_end=" << m_src_snap_id_end
+		     << ", dst_snap_id_start=" << m_dst_snap_id_start
+		     << dendl;
 }
 
 template <typename I>
@@ -103,9 +108,10 @@ void ImageCopyRequest<I>::compute_diff() {
 
   auto ctx = create_context_callback<
     ImageCopyRequest<I>, &ImageCopyRequest<I>::handle_compute_diff>(this);
-  auto req = object_map::DiffRequest<I>::create(m_src_image_ctx, m_src_snap_id_start,
-                                                m_src_snap_id_end, &m_object_diff_state,
-                                                ctx);
+  auto req = object_map::DiffRequest<I>::create(m_src_image_ctx,
+                                                m_src_snap_id_start,
+                                                m_src_snap_id_end, 0, UINT64_MAX,
+                                                &m_object_diff_state, ctx);
   req->send();
 }
 
@@ -183,21 +189,28 @@ void ImageCopyRequest<I>::send_next_object_copy() {
   ldout(m_cct, 20) << "object_num=" << ono << dendl;
   ++m_current_ops;
 
+  uint8_t object_diff_state = object_map::DIFF_STATE_HOLE;
   if (m_object_diff_state.size() > 0) {
     std::set<uint64_t> src_objects;
     map_src_objects(ono, &src_objects);
 
-    bool skip = true;
     for (auto src_ono : src_objects) {
-      if (src_ono >= m_object_diff_state.size() ||
-          m_object_diff_state[src_ono] != object_map::DIFF_STATE_HOLE) {
-        skip = false;
-        break;
+      if (src_ono >= m_object_diff_state.size()) {
+        object_diff_state = object_map::DIFF_STATE_DATA_UPDATED;
+      } else {
+        auto state = m_object_diff_state[src_ono];
+        if ((state == object_map::DIFF_STATE_HOLE_UPDATED &&
+             object_diff_state != object_map::DIFF_STATE_DATA_UPDATED) ||
+            (state == object_map::DIFF_STATE_DATA &&
+             object_diff_state == object_map::DIFF_STATE_HOLE) ||
+            (state == object_map::DIFF_STATE_DATA_UPDATED)) {
+          object_diff_state = state;
+        }
       }
     }
 
-    if (skip) {
-      ldout(m_cct, 20) << "skipping clean object " << ono << dendl;
+    if (object_diff_state == object_map::DIFF_STATE_HOLE) {
+      ldout(m_cct, 20) << "skipping non-existent object " << ono << dendl;
       create_async_context_callback(*m_src_image_ctx, ctx)->complete(0);
       return;
     }
@@ -206,6 +219,10 @@ void ImageCopyRequest<I>::send_next_object_copy() {
   uint32_t flags = 0;
   if (m_flatten) {
     flags |= OBJECT_COPY_REQUEST_FLAG_FLATTEN;
+  }
+  if (object_diff_state == object_map::DIFF_STATE_DATA) {
+    // no source objects have been updated and at least one has clean data
+    flags |= OBJECT_COPY_REQUEST_FLAG_EXISTS_CLEAN;
   }
 
   auto req = ObjectCopyRequest<I>::create(

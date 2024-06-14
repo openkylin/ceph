@@ -1,5 +1,7 @@
 #include "scrub_types.h"
 
+using std::map;
+
 using namespace librados;
 
 void object_id_wrapper::encode(bufferlist& bl) const
@@ -53,10 +55,12 @@ static void encode(const osd_shard_t& shard, bufferlist& bl) {
 
 void shard_info_wrapper::set_object(const ScrubMap::object& object)
 {
-  for (auto attr : object.attrs) {
-    bufferlist bl;
-    bl.push_back(attr.second);
-    attrs.insert(std::make_pair(attr.first, std::move(bl)));
+  // logically no-op, changes the comparator from std::less<void>
+  // while avoiding `reinterpret_cast<const std::map<std::string,
+  // ceph::bufferlist>&>(object.attrs)`
+  attrs.clear();
+  for (const auto& kv : object.attrs) {
+    attrs.insert(kv);
   }
   size = object.size;
   if (object.omap_digest_present) {
@@ -118,15 +122,15 @@ void inconsistent_obj_wrapper::add_shard(const pg_shard_t& pgs,
 
 void
 inconsistent_obj_wrapper::set_auth_missing(const hobject_t& hoid,
-                                           const map<pg_shard_t, ScrubMap*>& maps,
+                                           const map<pg_shard_t, ScrubMap>& maps,
 					   map<pg_shard_t, shard_info_wrapper> &shard_map,
 					   int &shallow_errors, int &deep_errors,
 					   const pg_shard_t &primary)
 {
   for (auto pg_map : maps) {
-    auto oid_object = pg_map.second->objects.find(hoid);
+    auto oid_object = pg_map.second.objects.find(hoid);
     shard_map[pg_map.first].primary = (pg_map.first == primary);
-    if (oid_object == pg_map.second->objects.end())
+    if (oid_object == pg_map.second.objects.end())
       shard_map[pg_map.first].set_missing();
     else
       shard_map[pg_map.first].set_object(oid_object->second);

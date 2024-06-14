@@ -21,6 +21,7 @@
 #pragma once
 
 #include <ostream>
+#include <fmt/core.h>
 
 /// \addtogroup logging
 /// @{
@@ -69,8 +70,7 @@ public:
 /// The actual evaluation is triggered by applying a () operator on a
 /// returned object.
 ///
-/// \param Func a type of a func
-/// \param func func a functor to evaluate the value
+/// \param func a functor to evaluate the value
 ///
 /// \return a lazy_eval object that may be used for evaluating a value
 template <typename Func>
@@ -151,4 +151,25 @@ ostream& operator<<(ostream& os, seastar::lazy_deref_wrapper<T> ld) {
     return os << "null";
 }
 }
+
+template <typename Func>
+struct fmt::formatter<seastar::lazy_eval<Func>> : fmt::formatter<std::string_view> {
+    template <typename FormatContext>
+    auto format(const seastar::lazy_eval<Func>& lf, FormatContext& ctx) const {
+        return fmt::format_to(ctx.out(), "{}", lf());
+    }
+};
+
+template <typename T>
+struct fmt::formatter<seastar::lazy_deref_wrapper<T>> : fmt::formatter<std::string_view> {
+    template <typename FormatContext>
+    auto format(const seastar::lazy_deref_wrapper<T>& ld, FormatContext& ctx) const {
+        if (ld.p) {
+            return fmt::format_to(ctx.out(), "{}", *ld.p);
+        } else {
+            return fmt::format_to(ctx.out(), "null");
+        }
+    }
+};
+
 /// @}

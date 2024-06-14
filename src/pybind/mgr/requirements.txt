@@ -1,15 +1,5 @@
-cherrypy
-pytest-cov==2.7.1
-mock; python_version <= '3.3'
-ipaddress; python_version < '3.3'
--e../../python-common
-kubernetes
-requests-mock
-pyyaml
-prettytable
-pyOpenSSL
-execnet
-remoto
-Jinja2
-pyfakefs
-
+-rrequirements-required.txt
+asyncssh==2.9
+kubernetes==11.0.0
+urllib3==1.26.15
+pytest==7.4.4

@@ -5,6 +5,7 @@
 
 #include <map>
 #include <set>
+#include <vector>
 
 #include "include/encoding.h"
 #include "include/utime.h"
@@ -20,14 +21,14 @@ struct creating_pgs_t {
 
     // NOTE: pre-octopus instances of this class will have a
     // zeroed-out history
-    vector<int> up;
+    std::vector<int> up;
     int up_primary = -1;
-    vector<int> acting;
+    std::vector<int> acting;
     int acting_primary = -1;
     pg_history_t history;
     PastIntervals past_intervals;
 
-    void encode(bufferlist& bl, uint64_t features) const {
+    void encode(ceph::buffer::list& bl, uint64_t features) const {
       using ceph::encode;
       if (!HAVE_FEATURE(features, SERVER_OCTOPUS)) {
 	// was pair<epoch_t,utime_t> prior to octopus
@@ -46,12 +47,12 @@ struct creating_pgs_t {
       encode(past_intervals, bl);
       ENCODE_FINISH(bl);
     }
-    void decode_legacy(bufferlist::const_iterator& p) {
+    void decode_legacy(ceph::buffer::list::const_iterator& p) {
       using ceph::decode;
       decode(create_epoch, p);
       decode(create_stamp, p);
     }
-    void decode(bufferlist::const_iterator& p) {
+    void decode(ceph::buffer::list::const_iterator& p) {
       using ceph::decode;
       DECODE_START(1, p);
       decode(create_epoch, p);
@@ -64,7 +65,7 @@ struct creating_pgs_t {
       decode(past_intervals, p);
       DECODE_FINISH(p);
     }
-    void dump(Formatter *f) const {
+    void dump(ceph::Formatter *f) const {
       f->dump_unsigned("create_epoch", create_epoch);
       f->dump_stream("create_stamp") << create_stamp;
       f->open_array_section("up");
@@ -82,8 +83,20 @@ struct creating_pgs_t {
       f->dump_object("pg_history", history);
       f->dump_object("past_intervals", past_intervals);
     }
+    static void generate_test_instances(std::list<pg_create_info*>& o) {
+      o.push_back(new pg_create_info);
+      o.back()->create_epoch = 10;
+      o.push_back(new pg_create_info);
+      o.back()->create_epoch = 1;
+      o.back()->create_stamp = utime_t(2, 3);
+      o.back()->up = {1, 2, 3};
+      o.back()->up_primary = 1;
+      o.back()->acting = {1, 2, 3};
+      o.back()->acting_primary = 1;
+    }
 
-    pg_create_info() {}
+    pg_create_info() 
+      : create_epoch(0) {}
     pg_create_info(epoch_t e, utime_t t)
       : create_epoch(e),
 	create_stamp(t) {
@@ -103,14 +116,14 @@ struct creating_pgs_t {
     bool done() const {
       return start >= end;
     }
-    void encode(bufferlist& bl) const {
+    void encode(ceph::buffer::list& bl) const {
       using ceph::encode;
       encode(created, bl);
       encode(modified, bl);
       encode(start, bl);
       encode(end, bl);
     }
-    void decode(bufferlist::const_iterator& p) {
+    void decode(ceph::buffer::list::const_iterator& p) {
       using ceph::decode;
       decode(created, p);
       decode(modified, p);
@@ -120,7 +133,7 @@ struct creating_pgs_t {
   };
 
   /// queue of pgs we still need to create (poolid -> <created, set of ps>)
-  map<int64_t,pool_create_info> queue;
+  std::map<int64_t,pool_create_info> queue;
 
   /// pools that exist in the osdmap for which at least one pg has been created
   std::set<int64_t> created_pools;
@@ -154,7 +167,7 @@ struct creating_pgs_t {
     queue.erase(removed_pool);
     return total - pgs.size();
   }
-  void encode(bufferlist& bl, uint64_t features) const {
+  void encode(ceph::buffer::list& bl, uint64_t features) const {
     unsigned v = 3;
     if (!HAVE_FEATURE(features, SERVER_OCTOPUS)) {
       v = 2;
@@ -166,7 +179,7 @@ struct creating_pgs_t {
     encode(queue, bl);
     ENCODE_FINISH(bl);
   }
-  void decode(bufferlist::const_iterator& bl) {
+  void decode(ceph::buffer::list::const_iterator& bl) {
     DECODE_START(3, bl);
     decode(last_scan_epoch, bl);
     if (struct_v >= 3) {
@@ -214,7 +227,7 @@ struct creating_pgs_t {
     }
     f->close_section();
   }
-  static void generate_test_instances(list<creating_pgs_t*>& o) {
+  static void generate_test_instances(std::list<creating_pgs_t*>& o) {
     auto c = new creating_pgs_t;
     c->last_scan_epoch = 17;
     c->pgs.emplace(pg_t{42, 2}, pg_create_info(31, utime_t{891, 113}));

@@ -1,7 +1,14 @@
 #include <seastar/rpc/rpc.hh>
+#include <seastar/core/align.hh>
+#include <seastar/core/seastar.hh>
 #include <seastar/core/print.hh>
-#include <seastar/util/defer.hh>
+#include <seastar/core/future-util.hh>
+#include <seastar/core/metrics.hh>
 #include <boost/range/adaptor/map.hpp>
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<seastar::rpc::streaming_domain_type> : fmt::ostream_formatter {};
+#endif
 
 namespace seastar {
 
@@ -11,17 +18,27 @@ namespace rpc {
         log(format("client {} msg_id {}:  {}", info.addr, msg_id, str));
     }
 
+    void logger::operator()(const client_info& info, id_type msg_id, log_level level, std::string_view str) const {
+        log(level, "client {} msg_id {}:  {}", info.addr, msg_id, str);
+    }
+
     void logger::operator()(const client_info& info, const sstring& str) const {
         (*this)(info.addr, str);
+    }
+
+    void logger::operator()(const client_info& info, log_level level, std::string_view str) const {
+        (*this)(info.addr, level, str);
     }
 
     void logger::operator()(const socket_address& addr, const sstring& str) const {
         log(format("client {}: {}", addr, str));
     }
 
-  no_wait_type no_wait;
+    void logger::operator()(const socket_address& addr, log_level level, std::string_view str) const {
+        log(level, "client {}: {}", addr, str);
+    }
 
-  constexpr size_t snd_buf::chunk_size;
+  no_wait_type no_wait;
 
   snd_buf::snd_buf(size_t size_) : size(size_) {
       if (size <= chunk_size) {
@@ -37,12 +54,15 @@ namespace rpc {
       }
   }
 
+  snd_buf::snd_buf(snd_buf&&) noexcept = default;
+  snd_buf& snd_buf::operator=(snd_buf&&) noexcept = default;
+
   temporary_buffer<char>& snd_buf::front() {
-      auto* one = compat::get_if<temporary_buffer<char>>(&bufs);
+      auto* one = std::get_if<temporary_buffer<char>>(&bufs);
       if (one) {
           return *one;
       } else {
-          return compat::get<std::vector<temporary_buffer<char>>>(bufs).front();
+          return std::get<std::vector<temporary_buffer<char>>>(bufs).front();
       }
   }
 
@@ -50,16 +70,16 @@ namespace rpc {
   // a deleter of a new buffer takes care of deleting the original buffer
   template<typename T> // T is either snd_buf or rcv_buf
   T make_shard_local_buffer_copy(foreign_ptr<std::unique_ptr<T>> org) {
-      if (org.get_owner_shard() == engine().cpu_id()) {
+      if (org.get_owner_shard() == this_shard_id()) {
           return std::move(*org);
       }
       T buf(org->size);
-      auto* one = compat::get_if<temporary_buffer<char>>(&org->bufs);
+      auto* one = std::get_if<temporary_buffer<char>>(&org->bufs);
 
       if (one) {
           buf.bufs = temporary_buffer<char>(one->get_write(), one->size(), make_object_deleter(std::move(org)));
       } else {
-          auto& orgbufs = compat::get<std::vector<temporary_buffer<char>>>(org->bufs);
+          auto& orgbufs = std::get<std::vector<temporary_buffer<char>>>(org->bufs);
           std::vector<temporary_buffer<char>> newbufs;
           newbufs.reserve(orgbufs.size());
           deleter d = make_object_deleter(std::move(org));
@@ -75,6 +95,19 @@ namespace rpc {
   template snd_buf make_shard_local_buffer_copy(foreign_ptr<std::unique_ptr<snd_buf>>);
   template rcv_buf make_shard_local_buffer_copy(foreign_ptr<std::unique_ptr<rcv_buf>>);
 
+  static void log_exception(connection& c, log_level level, const char* log, std::exception_ptr eptr) {
+      const char* s;
+      try {
+          std::rethrow_exception(eptr);
+      } catch (std::exception& ex) {
+          s = ex.what();
+      } catch (...) {
+          s = "unknown exception";
+      }
+      auto formatted = format("{}: {}", log, s);
+      c.get_logger()(c.peer_address(), level, std::string_view(formatted.data(), formatted.size()));
+  }
+
   snd_buf connection::compress(snd_buf buf) {
       if (_compressor) {
           buf = _compressor->compress(4, std::move(buf));
@@ -86,11 +119,11 @@ namespace rpc {
   }
 
   future<> connection::send_buffer(snd_buf buf) {
-      auto* b = compat::get_if<temporary_buffer<char>>(&buf.bufs);
+      auto* b = std::get_if<temporary_buffer<char>>(&buf.bufs);
       if (b) {
           return _write_buf.write(std::move(*b));
       } else {
-          return do_with(std::move(compat::get<std::vector<temporary_buffer<char>>>(buf.bufs)),
+          return do_with(std::move(std::get<std::vector<temporary_buffer<char>>>(buf.bufs)),
                   [this] (std::vector<temporary_buffer<char>>& ar) {
               return do_for_each(ar.begin(), ar.end(), [this] (auto& b) {
                   return _write_buf.write(std::move(b));
@@ -99,58 +132,66 @@ namespace rpc {
       }
   }
 
-  template<connection::outgoing_queue_type QueueType>
-  void connection::send_loop() {
-      _send_loop_stopped = do_until([this] { return _error; }, [this] {
-          return _outgoing_queue_cond.wait([this] { return !_outgoing_queue.empty(); }).then([this] {
-              // despite using wait with predicated above _outgoing_queue can still be empty here if
-              // there is only one entry on the list and its expire timer runs after wait() returned ready future,
-              // but before this continuation runs.
-              if (_outgoing_queue.empty()) {
-                  return make_ready_future();
+  future<> connection::send_entry(outgoing_entry& d) {
+      if (_propagate_timeout) {
+          static_assert(snd_buf::chunk_size >= sizeof(uint64_t), "send buffer chunk size is too small");
+          if (_timeout_negotiated) {
+              auto expire = d.t.get_timeout();
+              uint64_t left = 0;
+              if (expire != typename timer<rpc_clock_type>::time_point()) {
+                  left = std::chrono::duration_cast<std::chrono::milliseconds>(expire - timer<rpc_clock_type>::clock::now()).count();
               }
-              auto d = std::move(_outgoing_queue.front());
-              _outgoing_queue.pop_front();
-              d.t.cancel(); // cancel timeout timer
-              if (d.pcancel) {
-                  d.pcancel->cancel_send = std::function<void()>(); // request is no longer cancellable
-              }
-              if (QueueType == outgoing_queue_type::request) {
-                  static_assert(snd_buf::chunk_size >= 8, "send buffer chunk size is too small");
-                  if (_timeout_negotiated) {
-                      auto expire = d.t.get_timeout();
-                      uint64_t left = 0;
-                      if (expire != typename timer<rpc_clock_type>::time_point()) {
-                          left = std::chrono::duration_cast<std::chrono::milliseconds>(expire - timer<rpc_clock_type>::clock::now()).count();
-                      }
-                      write_le<uint64_t>(d.buf.front().get_write(), left);
-                  } else {
-                      d.buf.front().trim_front(8);
-                      d.buf.size -= 8;
-                  }
-              }
-              d.buf = compress(std::move(d.buf));
-              auto f = send_buffer(std::move(d.buf)).then([this] {
-                  _stats.sent_messages++;
-                  return _write_buf.flush();
-              });
-              return f.finally([d = std::move(d)] {});
-          });
-      }).handle_exception([this] (std::exception_ptr eptr) {
-          _error = true;
+              write_le<uint64_t>(d.buf.front().get_write(), left);
+          } else {
+              d.buf.front().trim_front(sizeof(uint64_t));
+              d.buf.size -= sizeof(uint64_t);
+          }
+      }
+      auto buf = compress(std::move(d.buf));
+      return send_buffer(std::move(buf)).then([this] {
+          _stats.sent_messages++;
+          return _write_buf.flush();
       });
   }
 
-  future<> connection::stop_send_loop() {
+  void connection::set_negotiated() noexcept {
+      _negotiated->set_value();
+      _negotiated = std::nullopt;
+  }
+
+  future<> connection::stop_send_loop(std::exception_ptr ex) {
       _error = true;
       if (_connected) {
-          _outgoing_queue_cond.broken();
           _fd.shutdown_output();
       }
-      return when_all(std::move(_send_loop_stopped), std::move(_sink_closed_future)).then([this] (std::tuple<future<>, future<bool>> res){
-          _outgoing_queue.clear();
-          // both _send_loop_stopped and _sink_closed_future are never exceptional
-          bool sink_closed = std::get<1>(res).get0();
+      if (ex == nullptr) {
+          ex = std::make_exception_ptr(closed_error());
+      }
+      while (!_outgoing_queue.empty()) {
+          auto it = std::prev(_outgoing_queue.end());
+          // Cancel all but front entry normally. The front entry is sitting in the
+          // send_entry() and cannot be withdrawn, except when _negotiated is still
+          // engaged. In the latter case when it will be aborted below the entry's
+          // continuation will not be called and its done promise will not resolve
+          // the _outgoing_queue_ready, so do it here
+          if (it != _outgoing_queue.begin()) {
+              withdraw(it, ex);
+          } else {
+              if (_negotiated) {
+                  it->done.set_exception(ex);
+              }
+              break;
+          }
+      }
+      if (_negotiated) {
+          _negotiated->set_exception(ex);
+      }
+      return when_all(std::move(_outgoing_queue_ready), std::move(_sink_closed_future)).then([this] (std::tuple<future<>, future<bool>> res){
+          // _outgoing_queue_ready might be exceptional if queue drain or
+          // _negotiated abortion set it such
+          std::get<0>(res).ignore_ready_future();
+          // _sink_closed_future is never exceptional
+          bool sink_closed = std::get<1>(res).get();
           return _connected && !sink_closed ? _write_buf.close() : make_ready_future();
       });
   }
@@ -190,27 +231,81 @@ namespace rpc {
       });
   }
 
-  future<> connection::send(snd_buf buf, compat::optional<rpc_clock_type::time_point> timeout, cancellable* cancel) {
+  void connection::withdraw(outgoing_entry::container_t::iterator it, std::exception_ptr ex) {
+      assert(it != _outgoing_queue.end());
+
+      auto pit = std::prev(it);
+      // Previous entry's (pit's) done future will schedule current entry (it)
+      // continuation. Similarly, it.done will schedule next entry continuation
+      // or will resolve _outgoing_queue_ready future.
+      //
+      // To withdraw "it" we need to do two things:
+      // - make pit.done resolve it->next (some time later)
+      // - resolve "it"'s continuation right now
+      //
+      // The latter is achieved by resolving pit.done immediatelly, the former
+      // by moving it.done into pit.done. For simplicity (verging on obscurity?)
+      // both done's are just swapped and "it" resolves its new promise
+
+      std::swap(it->done, pit->done);
+      it->uncancellable();
+      it->unlink();
+      if (ex == nullptr) {
+          it->done.set_value();
+      } else {
+          it->done.set_exception(ex);
+      }
+  }
+
+  future<> connection::send(snd_buf buf, std::optional<rpc_clock_type::time_point> timeout, cancellable* cancel) {
       if (!_error) {
           if (timeout && *timeout <= rpc_clock_type::now()) {
               return make_ready_future<>();
           }
-          _outgoing_queue.emplace_back(std::move(buf));
-          auto deleter = [this, it = std::prev(_outgoing_queue.cend())] {
-              _outgoing_queue.erase(it);
+
+          auto p = std::make_unique<outgoing_entry>(std::move(buf));
+          auto& d = *p;
+          _outgoing_queue.push_back(d);
+          _outgoing_queue_size++;
+          auto deleter = [this, it = _outgoing_queue.iterator_to(d)] {
+              // Front entry is most likely (unless _negotiated is unresolved, check enqueue_zero_frame()) sitting
+              // inside send_entry() continuations and thus it cannot be cancelled.
+              if (it != _outgoing_queue.begin()) {
+                  withdraw(it);
+              }
           };
+
           if (timeout) {
-              auto& t = _outgoing_queue.back().t;
+              auto& t = d.t;
               t.set_callback(deleter);
               t.arm(timeout.value());
           }
           if (cancel) {
               cancel->cancel_send = std::move(deleter);
-              cancel->send_back_pointer = &_outgoing_queue.back().pcancel;
-              _outgoing_queue.back().pcancel = cancel;
+              cancel->send_back_pointer = &d.pcancel;
+              d.pcancel = cancel;
           }
-          _outgoing_queue_cond.signal();
-          return _outgoing_queue.back().p->get_future();
+
+          // New entry should continue (do its .then() lambda) after _outgoing_queue_ready
+          // resolves. Next entry will need to do the same after this entry's done resolves.
+          // Thus -- replace _outgoing_queue_ready with d's future and chain its continuation
+          // on ..._ready's old value.
+          return std::exchange(_outgoing_queue_ready, d.done.get_future()).then([this, p = std::move(p)] () mutable {
+              _outgoing_queue_size--;
+              if (__builtin_expect(!p->is_linked(), false)) {
+                  // If withdrawn the entry is unlinked and this lambda is fired right at once
+                  return make_ready_future<>();
+              }
+
+              p->uncancellable();
+              return send_entry(*p).then_wrapped([this, p = std::move(p)] (auto f) mutable {
+                  if (f.failed()) {
+                      f.ignore_ready_future();
+                      abort();
+                  }
+                  p->done.set_value();
+              });
+          });
       } else {
           return make_exception_future<>(closed_error());
       }
@@ -223,8 +318,12 @@ namespace rpc {
       }
   }
 
-  future<> connection::stop() {
-      abort();
+  future<> connection::stop() noexcept {
+      try {
+          abort();
+      } catch (...) {
+          log_exception(*this, log_level::error, "fail to shutdown connection while stopping", std::current_exception());
+      }
       return _stopped.get_future();
   }
 
@@ -251,7 +350,8 @@ namespace rpc {
           std::copy_n(neg.get_write(), sizeof(frame.magic), frame.magic);
           frame.len = read_le<uint32_t>(neg.get_write() + 8);
           if (std::memcmp(frame.magic, rpc_magic, sizeof(frame.magic)) != 0) {
-              c.get_logger()(c.peer_address(), "wrong protocol magic");
+              c.get_logger()(c.peer_address(), format("wrong protocol magic: {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                    frame.magic[0], frame.magic[1], frame.magic[2], frame.magic[3], frame.magic[4], frame.magic[5], frame.magic[6], frame.magic[7]));
               return make_exception_future<feature_map>(closed_error());
           }
           auto len = frame.len;
@@ -306,7 +406,7 @@ namespace rpc {
                               return stop_iteration::yes;
                           } else {
                               left -= data.size();
-                              compat::get<std::vector<temporary_buffer<char>>>(rb.bufs).push_back(std::move(data));
+                              std::get<std::vector<temporary_buffer<char>>>(rb.bufs).push_back(std::move(data));
                               return left ? stop_iteration::no : stop_iteration::yes;
                           }
                       });
@@ -350,7 +450,7 @@ namespace rpc {
   typename FrameType::return_type
   connection::read_frame_compressed(socket_address info, std::unique_ptr<compressor>& compressor, input_stream<char>& in) {
       if (compressor) {
-          return in.read_exactly(4).then([&] (temporary_buffer<char> compress_header) {
+          return in.read_exactly(4).then([this, info, &in, &compressor] (temporary_buffer<char> compress_header) {
               if (compress_header.size() != 4) {
                   if (compress_header.size() != 0) {
                       _logger(info, format("unexpected eof on a {} while reading compression header: expected 4 got {:d}", FrameType::role(), compress_header.size()));
@@ -366,11 +466,13 @@ namespace rpc {
                   }
                   auto eb = compressor->decompress(std::move(compressed_data));
                   net::packet p;
-                  auto* one = compat::get_if<temporary_buffer<char>>(&eb.bufs);
+                  auto* one = std::get_if<temporary_buffer<char>>(&eb.bufs);
                   if (one) {
                       p = net::packet(std::move(p), std::move(*one));
                   } else {
-                      for (auto&& b : compat::get<std::vector<temporary_buffer<char>>>(eb.bufs)) {
+                      auto&& bufs = std::get<std::vector<temporary_buffer<char>>>(eb.bufs);
+                      p.reserve(bufs.size());
+                      for (auto&& b : bufs) {
                           p = net::packet(std::move(p), std::move(b));
                       }
                   }
@@ -385,7 +487,7 @@ namespace rpc {
   }
 
   struct stream_frame {
-      using opt_buf_type = compat::optional<rcv_buf>;
+      using opt_buf_type = std::optional<rcv_buf>;
       using return_type = future<opt_buf_type>;
       struct header_type {
           uint32_t size;
@@ -398,7 +500,7 @@ namespace rpc {
           return "stream";
       }
       static future<opt_buf_type> empty_value() {
-          return make_ready_future<opt_buf_type>(compat::nullopt);
+          return make_ready_future<opt_buf_type>(std::nullopt);
       }
       static header_type decode_header(const char* ptr) {
           header_type h{read_le<uint32_t>(ptr), false};
@@ -419,7 +521,7 @@ namespace rpc {
       }
   };
 
-  future<compat::optional<rcv_buf>>
+  future<std::optional<rcv_buf>>
   connection::read_stream_frame_compressed(input_stream<char>& in) {
       return read_frame_compressed<stream_frame>(peer_address(), _compressor, in);
   }
@@ -447,7 +549,7 @@ namespace rpc {
   }
 
   future<> connection::handle_stream_frame() {
-      return read_stream_frame_compressed(_read_buf).then([this] (compat::optional<rcv_buf> data) {
+      return read_stream_frame_compressed(_read_buf).then([this] (std::optional<rcv_buf> data) {
           if (!data) {
               _error = true;
               return make_ready_future<>();
@@ -480,23 +582,77 @@ namespace rpc {
   xshard_connection_ptr connection::get_stream(connection_id id) const {
       auto it = _streams.find(id);
       if (it == _streams.end()) {
-          throw std::logic_error(format("rpc stream id {:d} not found", id).c_str());
+          throw std::logic_error(format("rpc stream id {} not found", id).c_str());
       }
       return it->second;
   }
 
-  static void log_exception(connection& c, const char* log, std::exception_ptr eptr) {
-      const char* s;
-      try {
-          std::rethrow_exception(eptr);
-      } catch (std::exception& ex) {
-          s = ex.what();
-      } catch (...) {
-          s = "unknown exception";
+  // The request frame is
+  //   le64 optional timeout (see request_frame_with_timeout below)
+  //   le64 message type a.k.a. verb ID
+  //   le64 message ID
+  //   le32 payload length
+  //   ...  payload
+  struct request_frame {
+      using opt_buf_type = std::optional<rcv_buf>;
+      using header_and_buffer_type = std::tuple<std::optional<uint64_t>, uint64_t, int64_t, opt_buf_type>;
+      using return_type = future<header_and_buffer_type>;
+      using header_type = std::tuple<std::optional<uint64_t>, uint64_t, int64_t, uint32_t>;
+      static constexpr size_t raw_header_size = sizeof(uint64_t) + sizeof(int64_t) + sizeof(uint32_t);
+      static size_t header_size() {
+          static_assert(request_frame_headroom >= raw_header_size);
+          return raw_header_size;
       }
-      c.get_logger()(c.peer_address(), format("{}: {}", log, s));
-  }
+      static const char* role() {
+          return "server";
+      }
+      static auto empty_value() {
+          return make_ready_future<header_and_buffer_type>(header_and_buffer_type(std::nullopt, uint64_t(0), 0, std::nullopt));
+      }
+      static header_type decode_header(const char* ptr) {
+          auto type = read_le<uint64_t>(ptr);
+          auto msgid = read_le<int64_t>(ptr + 8);
+          auto size = read_le<uint32_t>(ptr + 16);
+          return std::make_tuple(std::nullopt, type, msgid, size);
+      }
+      static void encode_header(uint64_t type, int64_t msg_id, snd_buf& buf, size_t off) {
+          auto p = buf.front().get_write() + off;
+          write_le<uint64_t>(p, type);
+          write_le<int64_t>(p + 8, msg_id);
+          write_le<uint32_t>(p + 16, buf.size - raw_header_size - off);
+      }
+      static uint32_t get_size(const header_type& t) {
+          return std::get<3>(t);
+      }
+      static auto make_value(const header_type& t, rcv_buf data) {
+          return make_ready_future<header_and_buffer_type>(header_and_buffer_type(std::get<0>(t), std::get<1>(t), std::get<2>(t), std::move(data)));
+      }
+  };
 
+  // This frame is used if protocol_features.TIMEOUT was negotiated
+  struct request_frame_with_timeout : request_frame {
+      using super = request_frame;
+      static constexpr size_t raw_header_size = sizeof(uint64_t) + request_frame::raw_header_size;
+      static size_t header_size() {
+          static_assert(request_frame_headroom >= raw_header_size);
+          return raw_header_size;
+      }
+      static typename super::header_type decode_header(const char* ptr) {
+          auto h = super::decode_header(ptr + 8);
+          std::get<0>(h) = read_le<uint64_t>(ptr);
+          return h;
+      }
+      static void encode_header(uint64_t type, int64_t msg_id, snd_buf& buf) {
+          static_assert(snd_buf::chunk_size >= raw_header_size, "send buffer chunk size is too small");
+          // expiration timer is encoded later
+          request_frame::encode_header(type, msg_id, buf, 8);
+      }
+  };
+
+  future<> client::request(uint64_t type, int64_t msg_id, snd_buf buf, std::optional<rpc_clock_type::time_point> timeout, cancellable* cancel) {
+      request_frame_with_timeout::encode_header(type, msg_id, buf);
+      return send(std::move(buf), timeout, cancel);
+  }
 
   void
   client::negotiate(feature_map provided) {
@@ -508,6 +664,9 @@ namespace rpc {
           case protocol_features::COMPRESS:
               if (_options.compressor_factory) {
                   _compressor = _options.compressor_factory->negotiate(e.second, false);
+              }
+              if (!_compressor) {
+                  throw std::runtime_error(format("RPC server responded with compression {} - unsupported", e.second));
               }
               break;
           case protocol_features::TIMEOUT:
@@ -524,31 +683,44 @@ namespace rpc {
       }
   }
 
-  future<>
-  client::negotiate_protocol(input_stream<char>& in) {
-      return receive_negotiation_frame(*this, in).then([this] (feature_map features) {
-          return negotiate(features);
+  future<> client::negotiate_protocol(feature_map features) {
+      return send_negotiation_frame(std::move(features)).then([this] {
+          return receive_negotiation_frame(*this, _read_buf).then([this] (feature_map features) {
+              return negotiate(std::move(features));
+          });
       });
   }
 
+  // The response frame is
+  //   le64 message ID
+  //   le32 payload size
+  //   ...  payload
   struct response_frame {
-      using opt_buf_type = compat::optional<rcv_buf>;
+      using opt_buf_type = std::optional<rcv_buf>;
       using header_and_buffer_type = std::tuple<int64_t, opt_buf_type>;
       using return_type = future<header_and_buffer_type>;
       using header_type = std::tuple<int64_t, uint32_t>;
+      static constexpr size_t raw_header_size = sizeof(int64_t) + sizeof(uint32_t);
       static size_t header_size() {
-          return 12;
+          static_assert(response_frame_headroom >= raw_header_size);
+          return raw_header_size;
       }
       static const char* role() {
           return "client";
       }
       static auto empty_value() {
-          return make_ready_future<header_and_buffer_type>(header_and_buffer_type(0, compat::nullopt));
+          return make_ready_future<header_and_buffer_type>(header_and_buffer_type(0, std::nullopt));
       }
       static header_type decode_header(const char* ptr) {
           auto msgid = read_le<int64_t>(ptr);
           auto size = read_le<uint32_t>(ptr + 8);
           return std::make_tuple(msgid, size);
+      }
+      static void encode_header(int64_t msg_id, snd_buf& data) {
+          static_assert(snd_buf::chunk_size >= raw_header_size, "send buffer chunk size is too small");
+          auto p = data.front().get_write();
+          write_le<int64_t>(p, msg_id);
+          write_le<uint32_t>(p + 8, data.size - raw_header_size);
       }
       static uint32_t get_size(const header_type& t) {
           return std::get<1>(t);
@@ -560,23 +732,18 @@ namespace rpc {
 
 
   future<response_frame::header_and_buffer_type>
-  client::read_response_frame(input_stream<char>& in) {
-      return read_frame<response_frame>(_server_addr, in);
-  }
-
-  future<response_frame::header_and_buffer_type>
   client::read_response_frame_compressed(input_stream<char>& in) {
       return read_frame_compressed<response_frame>(_server_addr, _compressor, in);
   }
 
   stats client::get_stats() const {
       stats res = _stats;
-      res.wait_reply = _outstanding.size();
-      res.pending = _outgoing_queue.size();
+      res.wait_reply = incoming_queue_length();
+      res.pending = outgoing_queue_length();
       return res;
   }
 
-  void client::wait_for_reply(id_type id, std::unique_ptr<reply_handler_base>&& h, compat::optional<rpc_clock_type::time_point> timeout, cancellable* cancel) {
+  void client::wait_for_reply(id_type id, std::unique_ptr<reply_handler_base>&& h, std::optional<rpc_clock_type::time_point> timeout, cancellable* cancel) {
       if (timeout) {
           h->t.set_callback(std::bind(std::mem_fn(&client::wait_timed_out), this, id));
           h->t.arm(timeout.value());
@@ -597,10 +764,12 @@ namespace rpc {
       _outstanding.erase(id);
   }
 
-  future<> client::stop() {
-      if (!_error) {
-          _error = true;
+  future<> client::stop() noexcept {
+      _error = true;
+      try {
           _socket.shutdown();
+      } catch(...) {
+          log_exception(*this, log_level::error, "fail to shutdown connection while stopping", std::current_exception());
       }
       return _stopped.get_future();
   }
@@ -608,7 +777,7 @@ namespace rpc {
   void client::abort_all_streams() {
       while (!_streams.empty()) {
           auto&& s = _streams.begin();
-          assert(s->second->get_owner_shard() == engine().cpu_id()); // abort can be called only locally
+          assert(s->second->get_owner_shard() == this_shard_id()); // abort can be called only locally
           s->second->get()->abort();
           _streams.erase(s);
       }
@@ -620,8 +789,101 @@ namespace rpc {
       }
   }
 
+  // This is the enlightened copy of the connection::send() method. Its intention is to
+  // keep a dummy entry in front of the queue while connect+negotiate is happenning so
+  // that all subsequent entries could abort on timeout or explicit cancellation.
+  void client::enqueue_zero_frame() {
+      if (_error) {
+          return;
+      }
+
+      auto p = std::make_unique<outgoing_entry>(snd_buf(0));
+      auto& d = *p;
+      _outgoing_queue.push_back(d);
+
+      // Make it in the background. Even if the client is stopped it will pick
+      // up all the entries hanging around
+      (void)std::exchange(_outgoing_queue_ready, d.done.get_future()).then_wrapped([p = std::move(p)] (auto f) mutable {
+          if (f.failed()) {
+              f.ignore_ready_future();
+          } else {
+              p->done.set_value();
+          }
+      });
+  }
+
+  struct client::metrics::domain {
+      metrics::domain_list_t list;
+      stats dead;
+      seastar::metrics::metric_groups metric_groups;
+
+      static thread_local std::unordered_map<sstring, domain> all;
+      static domain& find_or_create(sstring name);
+
+      stats::counter_type count_all(stats::counter_type stats::* field) noexcept {
+          stats::counter_type res = dead.*field;
+          for (const auto& m : list) {
+              res += m._c._stats.*field;
+          }
+          return res;
+      }
+
+      size_t count_all_fn(size_t (client::*fn)(void) const) noexcept {
+          size_t res = 0;
+          for (const auto& m : list) {
+              res += (m._c.*fn)();
+          }
+          return res;
+      }
+
+      domain(sstring name)
+      {
+          namespace sm = seastar::metrics;
+          auto domain_l = sm::label("domain")(name);
+
+          metric_groups.add_group("rpc_client", {
+                sm::make_gauge("count", [this] { return list.size(); },
+                        sm::description("Total number of clients"), { domain_l }),
+                sm::make_counter("sent_messages", std::bind(&domain::count_all, this, &stats::sent_messages),
+                        sm::description("Total number of messages sent"), { domain_l }),
+                sm::make_counter("replied", std::bind(&domain::count_all, this, &stats::replied),
+                        sm::description("Total number of responses received"), { domain_l }),
+                sm::make_counter("exception_received", std::bind(&domain::count_all, this, &stats::exception_received),
+                        sm::description("Total number of exceptional responses received"), { domain_l }).set_skip_when_empty(),
+                sm::make_counter("timeout", std::bind(&domain::count_all, this, &stats::timeout),
+                        sm::description("Total number of timeout responses"), { domain_l }).set_skip_when_empty(),
+                sm::make_gauge("pending", std::bind(&domain::count_all_fn, this, &client::outgoing_queue_length),
+                    sm::description("Number of queued outbound messages"), { domain_l }),
+                sm::make_gauge("wait_reply", std::bind(&domain::count_all_fn, this, &client::incoming_queue_length),
+                    sm::description("Number of replies waiting for"), { domain_l }),
+          });
+      }
+  };
+
+  thread_local std::unordered_map<sstring, client::metrics::domain> client::metrics::domain::all;
+
+  client::metrics::domain& client::metrics::domain::find_or_create(sstring name) {
+      auto i = all.try_emplace(name, name);
+      return i.first->second;
+  }
+
+  client::metrics::metrics(const client& c)
+        : _c(c)
+        , _domain(domain::find_or_create(_c._options.metrics_domain))
+  {
+      _domain.list.push_back(*this);
+  }
+
+  client::metrics::~metrics() {
+      _domain.dead.replied += _c._stats.replied;
+      _domain.dead.exception_received += _c._stats.exception_received;
+      _domain.dead.sent_messages += _c._stats.sent_messages;
+      _domain.dead.timeout += _c._stats.timeout;
+  }
+
   client::client(const logger& l, void* s, client_options ops, socket socket, const socket_address& addr, const socket_address& local)
-  : rpc::connection(l, s), _socket(std::move(socket)), _server_addr(addr), _options(ops) {
+  : rpc::connection(l, s), _socket(std::move(socket)), _server_addr(addr), _local_addr(local), _options(ops), _metrics(*this)
+  {
        _socket.set_reuseaddr(ops.reuseaddr);
       // Run client in the background.
       // Communicate result via _stopped.
@@ -648,17 +910,14 @@ namespace rpc {
               features[protocol_features::ISOLATION] = _options.isolation_cookie;
           }
 
-          return send_negotiation_frame(std::move(features)).then([this] {
-               return negotiate_protocol(_read_buf);
-          }).then([this] () {
-              _client_negotiated->set_value();
-              _client_negotiated = compat::nullopt;
-              send_loop();
+          return negotiate_protocol(std::move(features)).then([this] {
+              _propagate_timeout = !is_stream();
+              set_negotiated();
               return do_until([this] { return _read_buf.eof() || _error; }, [this] () mutable {
                   if (is_stream()) {
                       return handle_stream_frame();
                   }
-                  return read_response_frame_compressed(_read_buf).then([this] (std::tuple<int64_t, compat::optional<rcv_buf>> msg_id_and_data) {
+                  return read_response_frame_compressed(_read_buf).then([this] (std::tuple<int64_t, std::optional<rcv_buf>> msg_id_and_data) {
                       auto& msg_id = std::get<0>(msg_id_and_data);
                       auto& data = std::get<1>(msg_id_and_data);
                       auto it = _outstanding.find(std::abs(msg_id));
@@ -677,12 +936,12 @@ namespace rpc {
                               get_logger()(peer_address(), format("unknown verb exception {:d} ignored", ex.type));
                           } catch(...) {
                               // We've got error response but handler is no longer waiting, could be timed out.
-                              log_exception(*this, "ignoring error response", std::current_exception());
+                              log_exception(*this, log_level::info, "ignoring error response", std::current_exception());
                           }
                       } else {
                           // we get a reply for a message id not in _outstanding
                           // this can happened if the message id is timed out already
-                          // FIXME: log it but with low level, currently log levels are not supported
+                          get_logger()(peer_address(), log_level::debug, "got a reply for an expired message id");
                       }
                   });
               });
@@ -691,15 +950,23 @@ namespace rpc {
           std::exception_ptr ep;
           if (f.failed()) {
               ep = f.get_exception();
-              if (is_stream()) {
-                  log_exception(*this, _connected ? "client stream connection dropped" : "stream fail to connect", ep);
+              if (_connected) {
+                  if (is_stream()) {
+                      log_exception(*this, log_level::error, "client stream connection dropped", ep);
+                  } else {
+                      log_exception(*this, log_level::error, "client connection dropped", ep);
+                  }
               } else {
-                  log_exception(*this, _connected ? "client connection dropped" : "fail to connect", ep);
+                  if (is_stream()) {
+                      log_exception(*this, log_level::debug, "stream fail to connect", ep);
+                  } else {
+                      log_exception(*this, log_level::debug, "fail to connect", ep);
+                  }
               }
           }
           _error = true;
           _stream_queue.abort(std::make_exception_ptr(stream_closed()));
-          return stop_send_loop().then_wrapped([this] (future<> f) {
+          return stop_send_loop(ep).then_wrapped([this] (future<> f) {
               f.ignore_ready_future();
               _outstanding.clear();
               if (is_stream()) {
@@ -707,21 +974,19 @@ namespace rpc {
               } else {
                   abort_all_streams();
               }
-          }).finally([this, ep]{
-              if (_client_negotiated && ep) {
-                  _client_negotiated->set_exception(ep);
-              }
+          }).finally([this]{
               _stopped.set_value();
           });
       });
+      enqueue_zero_frame();
   }
 
   client::client(const logger& l, void* s, const socket_address& addr, const socket_address& local)
-  : client(l, s, client_options{}, engine().net().socket(), addr, local)
+  : client(l, s, client_options{}, make_socket(), addr, local)
   {}
 
   client::client(const logger& l, void* s, client_options options, const socket_address& addr, const socket_address& local)
-  : client(l, s, options, engine().net().socket(), addr, local)
+  : client(l, s, options, make_socket(), addr, local)
   {}
 
   client::client(const logger& l, void* s, socket socket, const socket_address& addr, const socket_address& local)
@@ -738,9 +1003,11 @@ namespace rpc {
           switch (id) {
           // supported features go here
           case protocol_features::COMPRESS: {
-              if (_server._options.compressor_factory) {
-                  _compressor = _server._options.compressor_factory->negotiate(e.second, true);
-                  ret[protocol_features::COMPRESS] = _server._options.compressor_factory->supported();
+              if (get_server()._options.compressor_factory) {
+                  _compressor = get_server()._options.compressor_factory->negotiate(e.second, true);
+                  if (_compressor) {
+                       ret[protocol_features::COMPRESS] = _compressor->name();
+                  }
               }
           }
           break;
@@ -749,32 +1016,57 @@ namespace rpc {
               ret[protocol_features::TIMEOUT] = "";
               break;
           case protocol_features::STREAM_PARENT: {
-              if (!_server._options.streaming_domain) {
-                  f = make_exception_future<>(std::runtime_error("streaming is not configured for the server"));
+              if (!get_server()._options.streaming_domain) {
+                  f = f.then([] {
+                      return make_exception_future<>(std::runtime_error("streaming is not configured for the server"));
+                  });
               } else {
                   _parent_id = deserialize_connection_id(e.second);
                   _is_stream = true;
                   // remove stream connection from rpc connection list
-                  _server._conns.erase(get_connection_id());
-                  f = smp::submit_to(_parent_id.shard(), [this, c = make_foreign(static_pointer_cast<rpc::connection>(shared_from_this()))] () mutable {
-                      auto sit = _servers.find(*_server._options.streaming_domain);
-                      if (sit == _servers.end()) {
-                          throw std::logic_error(format("Shard {:d} does not have server with streaming domain {:x}", engine().cpu_id(), *_server._options.streaming_domain).c_str());
-                      }
-                      auto s = sit->second;
-                      auto it = s->_conns.find(_parent_id);
-                      if (it == s->_conns.end()) {
-                          throw std::logic_error(format("Unknown parent connection {:d} on shard {:d}", _parent_id, engine().cpu_id()).c_str());
-                      }
-                      auto id = c->get_connection_id();
-                      it->second->register_stream(id, make_lw_shared(std::move(c)));
+                  get_server()._conns.erase(get_connection_id());
+                  f = f.then([this, c = shared_from_this()] () mutable {
+                      return smp::submit_to(_parent_id.shard(), [this, c = make_foreign(static_pointer_cast<rpc::connection>(c))] () mutable {
+                          auto sit = _servers.find(*get_server()._options.streaming_domain);
+                          if (sit == _servers.end()) {
+                              throw std::logic_error(format("Shard {:d} does not have server with streaming domain {}", this_shard_id(), *get_server()._options.streaming_domain).c_str());
+                          }
+                          auto s = sit->second;
+                          auto it = s->_conns.find(_parent_id);
+                          if (it == s->_conns.end()) {
+                              throw std::logic_error(format("Unknown parent connection {} on shard {:d}", _parent_id, this_shard_id()).c_str());
+                          }
+                          if (it->second->_error) {
+                              throw std::runtime_error(format("Parent connection {} is aborting on shard {:d}", _parent_id, this_shard_id()).c_str());
+                          }
+                          auto id = c->get_connection_id();
+                          it->second->register_stream(id, make_lw_shared(std::move(c)));
+                      });
                   });
               }
               break;
           }
           case protocol_features::ISOLATION: {
               auto&& isolation_cookie = e.second;
-              _isolation_config = _server._limits.isolate_connection(isolation_cookie);
+              struct isolation_function_visitor {
+                  isolation_function_visitor(const sstring& isolation_cookie) :
+                        _isolation_cookie(isolation_cookie) { }
+                  future<isolation_config> operator() (resource_limits::syncronous_isolation_function f) const {
+                      return futurize_invoke(f, _isolation_cookie);
+                  }
+                  future<isolation_config> operator() (resource_limits::asyncronous_isolation_function f) const {
+                      return f(_isolation_cookie);
+                  }
+              private:
+                  sstring _isolation_cookie;
+              };
+
+              auto visitor = isolation_function_visitor(isolation_cookie);
+              f = f.then([visitor = std::move(visitor), this] () mutable {
+                  return std::visit(visitor, get_server()._limits.isolate_connection).then([this] (isolation_config conf) {
+                      _isolation_config = conf;
+                  });
+              });
               ret.emplace(e);
               break;
           }
@@ -783,7 +1075,7 @@ namespace rpc {
               ;
           }
       }
-      if (_server._options.streaming_domain) {
+      if (get_server()._options.streaming_domain) {
           ret[protocol_features::CONNECTION_ID] = serialize_connection_id(_id);
       }
       return f.then([ret = std::move(ret)] {
@@ -792,53 +1084,13 @@ namespace rpc {
   }
 
   future<>
-  server::connection::negotiate_protocol(input_stream<char>& in) {
-      return receive_negotiation_frame(*this, in).then([this] (feature_map requested_features) {
+  server::connection::negotiate_protocol() {
+      return receive_negotiation_frame(*this, _read_buf).then([this] (feature_map requested_features) {
           return negotiate(std::move(requested_features)).then([this] (feature_map returned_features) {
               return send_negotiation_frame(std::move(returned_features));
           });
       });
   }
-
-  struct request_frame {
-      using opt_buf_type = compat::optional<rcv_buf>;
-      using header_and_buffer_type = std::tuple<compat::optional<uint64_t>, uint64_t, int64_t, opt_buf_type>;
-      using return_type = future<header_and_buffer_type>;
-      using header_type = std::tuple<compat::optional<uint64_t>, uint64_t, int64_t, uint32_t>;
-      static size_t header_size() {
-          return 20;
-      }
-      static const char* role() {
-          return "server";
-      }
-      static auto empty_value() {
-          return make_ready_future<header_and_buffer_type>(header_and_buffer_type(compat::nullopt, uint64_t(0), 0, compat::nullopt));
-      }
-      static header_type decode_header(const char* ptr) {
-          auto type = read_le<uint64_t>(ptr);
-          auto msgid = read_le<int64_t>(ptr + 8);
-          auto size = read_le<uint32_t>(ptr + 16);
-          return std::make_tuple(compat::nullopt, type, msgid, size);
-      }
-      static uint32_t get_size(const header_type& t) {
-          return std::get<3>(t);
-      }
-      static auto make_value(const header_type& t, rcv_buf data) {
-          return make_ready_future<header_and_buffer_type>(header_and_buffer_type(std::get<0>(t), std::get<1>(t), std::get<2>(t), std::move(data)));
-      }
-  };
-
-  struct request_frame_with_timeout : request_frame {
-      using super = request_frame;
-      static size_t header_size() {
-          return 28;
-      }
-      static typename super::header_type decode_header(const char* ptr) {
-          auto h = super::decode_header(ptr + 8);
-          std::get<0>(h) = read_le<uint64_t>(ptr);
-          return h;
-      }
-  };
 
   future<request_frame::header_and_buffer_type>
   server::connection::read_request_frame_compressed(input_stream<char>& in) {
@@ -850,15 +1102,12 @@ namespace rpc {
   }
 
   future<>
-  server::connection::respond(int64_t msg_id, snd_buf&& data, compat::optional<rpc_clock_type::time_point> timeout) {
-      static_assert(snd_buf::chunk_size >= 12, "send buffer chunk size is too small");
-      auto p = data.front().get_write();
-      write_le<int64_t>(p, msg_id);
-      write_le<uint32_t>(p + 8, data.size - 12);
+  server::connection::respond(int64_t msg_id, snd_buf&& data, std::optional<rpc_clock_type::time_point> timeout) {
+      response_frame::encode_header(msg_id, data);
       return send(std::move(data), timeout);
   }
 
-future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_type::time_point> timeout, int64_t msg_id, uint64_t type) {
+future<> server::connection::send_unknown_verb_reply(std::optional<rpc_clock_type::time_point> timeout, int64_t msg_id, uint64_t type) {
     return wait_for_resources(28, timeout).then([this, timeout, msg_id, type] (auto permit) {
         // send unknown_verb exception back
         snd_buf data(28);
@@ -870,7 +1119,7 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
         try {
             // Send asynchronously.
             // This is safe since connection::stop() will wait for background work.
-            (void)with_gate(_server._reply_gate, [this, timeout, msg_id, data = std::move(data), permit = std::move(permit)] () mutable {
+            (void)with_gate(get_server()._reply_gate, [this, timeout, msg_id, data = std::move(data), permit = std::move(permit)] () mutable {
                 // workaround for https://gcc.gnu.org/bugzilla/show_bug.cgi?id=83268
                 auto c = shared_from_this();
                 return respond(-msg_id, std::move(data), timeout).then([c = std::move(c), permit = std::move(permit)] {});
@@ -880,10 +1129,10 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
 }
 
   future<> server::connection::process() {
-      return negotiate_protocol(_read_buf).then([this] () mutable {
+      return negotiate_protocol().then([this] () mutable {
         auto sg = _isolation_config ? _isolation_config->sched_group : current_scheduling_group();
         return with_scheduling_group(sg, [this] {
-          send_loop();
+          set_negotiated();
           return do_until([this] { return _read_buf.eof() || _error; }, [this] () mutable {
               if (is_stream()) {
                   return handle_stream_frame();
@@ -897,42 +1146,42 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
                       _error = true;
                       return make_ready_future<>();
                   } else {
-                      compat::optional<rpc_clock_type::time_point> timeout;
+                      std::optional<rpc_clock_type::time_point> timeout;
                       if (expire && *expire) {
                           timeout = relative_timeout_to_absolute(std::chrono::milliseconds(*expire));
                       }
-                      auto h = _server._proto->get_handler(type);
+                      auto h = get_server()._proto.get_handler(type);
                       if (!h) {
                           return send_unknown_verb_reply(timeout, msg_id, type);
                       }
 
                       // If the new method of per-connection scheduling group was used, honor it.
                       // Otherwise, use the old per-handler scheduling group.
-                      auto sg = _isolation_config ? _isolation_config->sched_group : h->sg;
-                      return with_scheduling_group(sg, [this, timeout, msg_id, h, data = std::move(data.value())] () mutable {
-                          return h->func(shared_from_this(), timeout, msg_id, std::move(data)).finally([this, h] {
-                              // If anything between get_handler() and here throws, we leak put_handler
-                              _server._proto->put_handler(h);
-                          });
+                      auto sg = _isolation_config ? _isolation_config->sched_group : h->handler.sg;
+                      return with_scheduling_group(sg, [this, timeout, msg_id, &h = h->handler, data = std::move(data.value()), guard = std::move(h->holder)] () mutable {
+                          return h.func(shared_from_this(), timeout, msg_id, std::move(data), std::move(guard));
                       });
                   }
               });
           });
         });
       }).then_wrapped([this] (future<> f) {
+          std::exception_ptr ep;
           if (f.failed()) {
-              log_exception(*this, format("server{} connection dropped", is_stream() ? " stream" : "").c_str(), f.get_exception());
+              ep = f.get_exception();
+              log_exception(*this, log_level::error,
+                      format("server{} connection dropped", is_stream() ? " stream" : "").c_str(), ep);
           }
           _fd.shutdown_input();
           _error = true;
           _stream_queue.abort(std::make_exception_ptr(stream_closed()));
-          return stop_send_loop().then_wrapped([this] (future<> f) {
+          return stop_send_loop(ep).then_wrapped([this] (future<> f) {
               f.ignore_ready_future();
-              _server._conns.erase(get_connection_id());
+              get_server()._conns.erase(get_connection_id());
               if (is_stream()) {
                   return deregister_this_stream();
               } else {
-                  return make_ready_future<>();
+                  return abort_all_streams();
               }
           }).finally([this] {
               _stopped.set_value();
@@ -943,16 +1192,16 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
   }
 
   server::connection::connection(server& s, connected_socket&& fd, socket_address&& addr, const logger& l, void* serializer, connection_id id)
-      : rpc::connection(std::move(fd), l, serializer, id), _server(s) {
-      _info.addr = std::move(addr);
+          : rpc::connection(std::move(fd), l, serializer, id)
+          , _info{.addr{std::move(addr)}, .server{s}, .conn_id{id}} {
   }
 
   future<> server::connection::deregister_this_stream() {
-      if (!_server._options.streaming_domain) {
+      if (!get_server()._options.streaming_domain) {
           return make_ready_future<>();
       }
       return smp::submit_to(_parent_id.shard(), [this] () mutable {
-          auto sit = server::_servers.find(*_server._options.streaming_domain);
+          auto sit = server::_servers.find(*get_server()._options.streaming_domain);
           if (sit != server::_servers.end()) {
               auto s = sit->second;
               auto it = s->_conns.find(_parent_id);
@@ -963,18 +1212,28 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
       });
   }
 
+  future<> server::connection::abort_all_streams() {
+      return parallel_for_each(_streams | boost::adaptors::map_values, [] (xshard_connection_ptr s) {
+          return smp::submit_to(s->get_owner_shard(), [s] {
+              s->get()->abort();
+          });
+      }).then([this] {
+          _streams.clear();
+      });
+  }
+
   thread_local std::unordered_map<streaming_domain_type, server*> server::_servers;
 
   server::server(protocol_base* proto, const socket_address& addr, resource_limits limits)
-      : server(proto, engine().listen(addr, listen_options{true}), limits, server_options{})
+      : server(proto, seastar::listen(addr, listen_options{true}), limits, server_options{})
   {}
 
   server::server(protocol_base* proto, server_options opts, const socket_address& addr, resource_limits limits)
-      : server(proto, engine().listen(addr, listen_options{true, opts.load_balancing_algorithm}), limits, opts)
+      : server(proto, seastar::listen(addr, listen_options{true, opts.load_balancing_algorithm}), limits, opts)
   {}
 
   server::server(protocol_base* proto, server_socket ss, resource_limits limits, server_options opts)
-          : _proto(proto), _ss(std::move(ss)), _limits(limits), _resources_available(limits.max_memory), _options(opts)
+          : _proto(*proto), _ss(std::move(ss)), _limits(limits), _resources_available(limits.max_memory), _options(opts)
   {
       if (_options.streaming_domain) {
           if (_servers.find(*_options.streaming_domain) != _servers.end()) {
@@ -995,13 +1254,16 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
       // The caller has to call server::stop() to synchronize.
       (void)keep_doing([this] () mutable {
           return _ss.accept().then([this] (accept_result ar) mutable {
+              if (_options.filter_connection && !_options.filter_connection(ar.remote_address)) {
+                  return;
+              }
               auto fd = std::move(ar.connection);
               auto addr = std::move(ar.remote_address);
               fd.set_nodelay(_options.tcp_nodelay);
               connection_id id = _options.streaming_domain ?
-                      connection_id::make_id(_next_client_id++, uint16_t(engine().cpu_id())) :
+                      connection_id::make_id(_next_client_id++, uint16_t(this_shard_id())) :
                       connection_id::make_invalid_id(_next_client_id++);
-              auto conn = _proto->make_server_connection(*this, std::move(fd), std::move(addr), id);
+              auto conn = _proto.make_server_connection(*this, std::move(fd), std::move(addr), id);
               auto r = _conns.emplace(id, conn);
               assert(r.second);
               // Process asynchronously in background.
@@ -1017,26 +1279,53 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
       });
   }
 
-  future<> server::stop() {
+  future<> server::shutdown() {
+      if (_shutdown) {
+          return make_ready_future<>();
+      }
+
       _ss.abort_accept();
       _resources_available.broken();
       if (_options.streaming_domain) {
           _servers.erase(*_options.streaming_domain);
       }
-      return when_all(_ss_stopped.get_future(),
-          parallel_for_each(_conns | boost::adaptors::map_values, [] (shared_ptr<connection> conn) {
+      return _ss_stopped.get_future().then([this] {
+          return parallel_for_each(_conns | boost::adaptors::map_values, [] (shared_ptr<connection> conn) {
               return conn->stop();
-          }),
+          });
+      }).finally([this] {
+          _shutdown = true;
+      });
+  }
+
+  future<> server::stop() {
+      return when_all(
+          shutdown(),
           _reply_gate.close()
       ).discard_result();
   }
 
+  void server::abort_connection(connection_id id) {
+      auto it = _conns.find(id);
+      if (it == _conns.end()) {
+          return;
+      }
+      try {
+          it->second->abort();
+      } catch (...) {
+          log_exception(*it->second, log_level::error,
+                        "fail to shutdown connection on user request", std::current_exception());
+      }
+  }
+
   std::ostream& operator<<(std::ostream& os, const connection_id& id) {
-      return fmt_print(os, "{:x}", id.id);
+      fmt::print(os, "{:x}", id.id());
+      return os;
   }
 
   std::ostream& operator<<(std::ostream& os, const streaming_domain_type& domain) {
-      return fmt_print(os, "{:d}", domain._id);
+      fmt::print(os, "{:d}", domain._id);
+      return os;
   }
 
   isolation_config default_isolate_connection(sstring isolation_cookie) {

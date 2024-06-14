@@ -8,11 +8,12 @@
 #include <atomic>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
-#include "common/allocator.h"
+#include "common/Timer.h"
 #include "common/ceph_mutex.h"
 #include "common/config_proxy.h"
 #include "common/event_socket.h"
@@ -35,13 +36,14 @@
 #include <boost/lockfree/policies.hpp>
 #include <boost/lockfree/queue.hpp>
 
-class ContextWQ;
-class Finisher;
-class ThreadPool;
-class SafeTimer;
+namespace neorados {
+class IOContext;
+class RADOS;
+} // namespace neorados
 
 namespace librbd {
 
+  struct AsioEngine;
   template <typename> class ConfigWatcher;
   template <typename> class ExclusiveLock;
   template <typename> class ImageState;
@@ -50,17 +52,18 @@ namespace librbd {
   class LibrbdAdminSocketHook;
   template <typename> class ObjectMap;
   template <typename> class Operations;
+  template <typename> class PluginRegistry;
 
-  namespace cache {
-  template <typename> class ImageCache;
-  }
+  namespace asio { struct ContextWQ; }
+  namespace crypto { template <typename> class EncryptionFormat; }
   namespace exclusive_lock { struct Policy; }
   namespace io {
   class AioCompletion;
   class AsyncOperation;
   template <typename> class CopyupRequest;
-  template <typename> class ImageRequestWQ;
-  template <typename> class ObjectDispatcher;
+  enum class ImageArea;
+  struct ImageDispatcherInterface;
+  struct ObjectDispatcherInterface;
   }
   namespace journal { struct Policy; }
 
@@ -73,14 +76,14 @@ namespace librbd {
     struct SnapKeyComparator {
       inline bool operator()(const SnapKey& lhs, const SnapKey& rhs) const {
         // only compare by namespace type and name
-        if (lhs.first.which() != rhs.first.which()) {
-          return lhs.first.which() < rhs.first.which();
+        if (lhs.first.index() != rhs.first.index()) {
+          return lhs.first.index() < rhs.first.index();
         }
         return lhs.second < rhs.second;
       }
     };
 
-    static const string METADATA_CONF_PREFIX;
+    static const std::string METADATA_CONF_PREFIX;
 
     CephContext *cct;
     ConfigProxy config;
@@ -109,7 +112,15 @@ namespace librbd {
     std::string name;
     cls::rbd::SnapshotNamespace snap_namespace;
     std::string snap_name;
-    IoCtx data_ctx, md_ctx;
+
+    std::shared_ptr<AsioEngine> asio_engine;
+
+    // New ASIO-style RADOS API
+    neorados::RADOS& rados_api;
+
+    // Legacy RADOS API
+    librados::IoCtx data_ctx;
+    librados::IoCtx md_ctx;
 
     ConfigWatcher<ImageCtx> *config_watcher = nullptr;
     ImageWatcher<ImageCtx> *image_watcher;
@@ -134,8 +145,10 @@ namespace librbd {
                        // lockers
                        // object_map
                        // parent_md and parent
+                       // encryption_format
 
     ceph::shared_mutex timestamp_lock; // protects (create/access/modify)_timestamp
+                                       // and internal diff_iterate_lock_timestamp
     ceph::mutex async_ops_lock; // protects async_ops and async_requests
     ceph::mutex copyup_list_lock; // protects copyup_waiting_list
 
@@ -161,10 +174,9 @@ namespace librbd {
     utime_t create_timestamp;
     utime_t access_timestamp;
     utime_t modify_timestamp;
+    utime_t diff_iterate_lock_timestamp;
 
     file_layout_t layout;
-
-    cache::ImageCache<ImageCtx> *image_cache = nullptr;
 
     Readahead readahead;
     std::atomic<uint64_t> total_bytes_read = {0};
@@ -183,14 +195,14 @@ namespace librbd {
 
     xlist<operation::ResizeRequest<ImageCtx>*> resize_reqs;
 
-    io::ImageRequestWQ<ImageCtx> *io_work_queue;
-    io::ObjectDispatcher<ImageCtx> *io_object_dispatcher = nullptr;
+    io::ImageDispatcherInterface *io_image_dispatcher = nullptr;
+    io::ObjectDispatcherInterface *io_object_dispatcher = nullptr;
 
-    ContextWQ *op_work_queue;
+    asio::ContextWQ *op_work_queue;
 
-    typedef boost::lockfree::queue<
-      io::AioCompletion*,
-      boost::lockfree::allocator<ceph::allocator<void>>> Completions;
+    PluginRegistry<ImageCtx>* plugin_registry;
+
+    using Completions = boost::lockfree::queue<io::AioCompletion*>;
 
     Completions event_socket_completions;
     EventSocket event_socket;
@@ -222,6 +234,8 @@ namespace librbd {
 
     ZTracer::Endpoint trace_endpoint;
 
+    std::unique_ptr<crypto::EncryptionFormat<ImageCtx>> encryption_format;
+
     // unit test mock helpers
     static ImageCtx* create(const std::string &image_name,
                             const std::string &image_id,
@@ -233,9 +247,6 @@ namespace librbd {
                             librados::snap_t snap_id, IoCtx& p,
                             bool read_only) {
       return new ImageCtx(image_name, image_id, snap_id, p, read_only);
-    }
-    void destroy() {
-      delete this;
     }
 
     /**
@@ -273,7 +284,7 @@ namespace librbd {
 
     uint64_t get_current_size() const;
     uint64_t get_object_size() const;
-    string get_object_name(uint64_t num) const;
+    std::string get_object_name(uint64_t num) const;
     uint64_t get_stripe_unit() const;
     uint64_t get_stripe_count() const;
     uint64_t get_stripe_period() const;
@@ -293,6 +304,7 @@ namespace librbd {
 		 std::string in_snap_name,
 		 librados::snap_t id);
     uint64_t get_image_size(librados::snap_t in_snap_id) const;
+    uint64_t get_area_size(io::ImageArea area) const;
     uint64_t get_object_count(librados::snap_t in_snap_id) const;
     bool test_features(uint64_t test_features) const;
     bool test_features(uint64_t test_features,
@@ -313,10 +325,14 @@ namespace librbd {
     std::string get_parent_image_id(librados::snap_t in_snap_id) const;
     uint64_t get_parent_snap_id(librados::snap_t in_snap_id) const;
     int get_parent_overlap(librados::snap_t in_snap_id,
-			   uint64_t *overlap) const;
+                           uint64_t* raw_overlap) const;
+    std::pair<uint64_t, io::ImageArea> reduce_parent_overlap(
+        uint64_t raw_overlap, bool migration_write) const;
+    uint64_t prune_parent_extents(
+        std::vector<std::pair<uint64_t, uint64_t>>& image_extents,
+        io::ImageArea area, uint64_t raw_overlap, bool migration_write) const;
+
     void register_watch(Context *on_finish);
-    uint64_t prune_parent_extents(vector<pair<uint64_t,uint64_t> >& objectx,
-				  uint64_t overlap);
 
     void cancel_async_requests();
     void cancel_async_requests(Context *on_finish);
@@ -328,6 +344,7 @@ namespace librbd {
     ObjectMap<ImageCtx> *create_object_map(uint64_t snap_id);
     Journal<ImageCtx> *create_journal();
 
+    uint64_t get_data_offset() const;
     void set_image_name(const std::string &name);
 
     void notify_update();
@@ -339,11 +356,15 @@ namespace librbd {
     journal::Policy *get_journal_policy() const;
     void set_journal_policy(journal::Policy *policy);
 
-    static void get_thread_pool_instance(CephContext *cct,
-                                         ThreadPool **thread_pool,
-                                         ContextWQ **op_work_queue);
+    void rebuild_data_io_context();
+    IOContext get_data_io_context() const;
+    IOContext duplicate_data_io_context() const;
+
     static void get_timer_instance(CephContext *cct, SafeTimer **timer,
                                    ceph::mutex **timer_lock);
+
+  private:
+    std::shared_ptr<neorados::IOContext> data_io_context;
   };
 }
 

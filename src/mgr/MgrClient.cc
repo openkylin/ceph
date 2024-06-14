@@ -14,6 +14,7 @@
 
 #include "MgrClient.h"
 
+#include "common/perf_counters_key.h"
 #include "mgr/MgrContext.h"
 #include "mon/MonMap.h"
 
@@ -21,6 +22,7 @@
 #include "messages/MMgrMap.h"
 #include "messages/MMgrReport.h"
 #include "messages/MMgrOpen.h"
+#include "messages/MMgrUpdate.h"
 #include "messages/MMgrClose.h"
 #include "messages/MMgrConfigure.h"
 #include "messages/MCommand.h"
@@ -33,6 +35,9 @@ using std::string;
 using std::vector;
 
 using ceph::bufferlist;
+using ceph::make_message;
+using ceph::ref_cast;
+using ceph::ref_t;
 
 #define dout_subsys ceph_subsys_mgrc
 #undef dout_prefix
@@ -242,6 +247,24 @@ void MgrClient::_send_open()
   }
 }
 
+void MgrClient::_send_update()
+{
+  if (session && session->con) {
+    auto update = make_message<MMgrUpdate>();
+    if (!service_name.empty()) {
+      update->service_name = service_name;
+      update->daemon_name = daemon_name;
+    } else {
+      update->daemon_name = cct->_conf->name.get_id();
+    }
+    if (need_metadata_update) {
+      update->daemon_metadata = daemon_metadata;
+    }
+    update->need_metadata_update = need_metadata_update;
+    session->con->send_message2(update);
+  }
+}
+
 bool MgrClient::handle_mgr_map(ref_t<MMgrMap> m)
 {
   ceph_assert(ceph_mutex_is_locked_by_me(lock));
@@ -309,6 +332,12 @@ void MgrClient::_send_report()
         const PerfCounters::perf_counter_data_any_d &ctr,
         const PerfCounters &perf_counters)
     {
+      // FIXME: We don't send labeled perf counters to the mgr currently.
+      auto labels = ceph::perf_counters::key_labels(perf_counters.get_name());
+      if (labels.begin() != labels.end()) {
+        return false;
+      }
+
       return perf_counters.get_adjusted_priority(ctr.prio) >= (int)stats_threshold;
     };
 
@@ -345,20 +374,20 @@ void MgrClient::_send_report()
       }
 
       if (session->declared.count(path) == 0) {
-	ldout(cct,20) << " declare " << path << dendl;
-	PerfCounterType type;
-	type.path = path;
-	if (data.description) {
-	  type.description = data.description;
-	}
-	if (data.nick) {
-	  type.nick = data.nick;
-	}
-	type.type = data.type;
-       type.priority = perf_counters.get_adjusted_priority(data.prio);
-	type.unit = data.unit;
-	report->declare_types.push_back(std::move(type));
-	session->declared.insert(path);
+        ldout(cct, 20) << " declare " << path << dendl;
+        PerfCounterType type;
+        type.path = path;
+        if (data.description) {
+          type.description = data.description;
+        }
+        if (data.nick) {
+          type.nick = data.nick;
+        }
+        type.type = data.type;
+        type.priority = perf_counters.get_adjusted_priority(data.prio);
+        type.unit = data.unit;
+        report->declare_types.push_back(std::move(type));
+        session->declared.insert(path);
       }
 
       encode(static_cast<uint64_t>(data.u64), report->packed);
@@ -401,9 +430,7 @@ void MgrClient::_send_report()
 			    &last_config_bl_version);
 
   if (get_perf_report_cb) {
-    MetricPayload payload = get_perf_report_cb();
-    MetricReportMessage message(payload);
-    report->metric_report_message = message;
+    report->metric_report_message = MetricReportMessage(get_perf_report_cb());
   }
 
   session->con->send_message2(report);
@@ -550,7 +577,7 @@ bool MgrClient::handle_command_reply(
 
   auto &op = command_table.get_command(tid);
   if (op.outbl) {
-    op.outbl->claim(data);
+    *op.outbl = std::move(data);
   }
 
   if (op.outs) {
@@ -563,6 +590,30 @@ bool MgrClient::handle_command_reply(
 
   command_table.erase(tid);
   return true;
+}
+
+int MgrClient::update_daemon_metadata(
+  const std::string& service,
+  const std::string& name,
+  const std::map<std::string,std::string>& metadata)
+{
+  std::lock_guard l(lock);
+  if (service_daemon) {
+    return -EEXIST;
+  }
+  ldout(cct,1) << service << "." << name << " metadata " << metadata << dendl;
+  service_name = service;
+  daemon_name = name;
+  daemon_metadata = metadata;
+  daemon_dirty_status = true;
+
+  if (need_metadata_update &&
+      !daemon_metadata.empty()) {
+    _send_update();
+    need_metadata_update = false;
+  }
+
+  return 0;
 }
 
 int MgrClient::service_daemon_register(

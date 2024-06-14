@@ -39,7 +39,7 @@ template <>
 struct Threads<librbd::MockTestImageCtx> {
   ceph::mutex &timer_lock;
   SafeTimer *timer;
-  ContextWQ *work_queue;
+  librbd::asio::ContextWQ *work_queue;
 
   Threads(Threads<librbd::ImageCtx> *threads)
     : timer_lock(threads->timer_lock), timer(threads->timer),
@@ -127,7 +127,7 @@ struct OpenLocalImageRequest<librbd::MockTestImageCtx> {
   static OpenLocalImageRequest* create(librados::IoCtx &local_io_ctx,
                                        librbd::MockTestImageCtx **local_image_ctx,
                                        const std::string &local_image_id,
-                                       ContextWQ *work_queue,
+                                       librbd::asio::ContextWQ *work_queue,
                                        Context *on_finish) {
     ceph_assert(s_instance != nullptr);
     s_instance->image_ctx = local_image_ctx;
@@ -160,7 +160,7 @@ struct PrepareLocalImageRequest<librbd::MockTestImageCtx> {
                                           const std::string &global_image_id,
                                           std::string *local_image_name,
                                           StateBuilder<librbd::MockTestImageCtx>** state_builder,
-                                          ContextWQ *work_queue,
+                                          librbd::asio::ContextWQ *work_queue,
                                           Context *on_finish) {
     ceph_assert(s_instance != nullptr);
     s_instance->local_image_name = local_image_name;
@@ -634,6 +634,59 @@ TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageNotPrimaryLocalL
     "local mirror uuid", &ctx);
   request->send();
   ASSERT_EQ(0, ctx.wait());
+}
+
+TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageDNELocalLinked) {
+  InSequence seq;
+
+  // prepare local image
+  MockPrepareLocalImageRequest mock_prepare_local_image_request;
+  MockStateBuilder mock_state_builder;
+  expect_send(mock_prepare_local_image_request, mock_state_builder,
+              m_local_image_ctx->id, m_local_image_ctx->name, 0);
+
+  // prepare remote image
+  MockPrepareRemoteImageRequest mock_prepare_remote_image_request;
+  expect_send(mock_prepare_remote_image_request, mock_state_builder,
+              "remote mirror uuid", m_remote_image_ctx->id, -ENOENT);
+  expect_is_local_primary(mock_state_builder, false);
+  expect_is_linked(mock_state_builder, true);
+
+  C_SaferCond ctx;
+  MockThreads mock_threads(m_threads);
+  MockInstanceWatcher mock_instance_watcher;
+  MockBootstrapRequest *request = create_request(
+    &mock_threads, &mock_instance_watcher, "global image id",
+    "local mirror uuid", &ctx);
+  request->send();
+  ASSERT_EQ(-ENOLINK, ctx.wait());
+}
+
+TEST_F(TestMockImageReplayerBootstrapRequest, PrepareRemoteImageDNELocalLinkedCanceled) {
+  InSequence seq;
+
+  // prepare local image
+  MockPrepareLocalImageRequest mock_prepare_local_image_request;
+  MockStateBuilder mock_state_builder;
+  expect_send(mock_prepare_local_image_request, mock_state_builder,
+              m_local_image_ctx->id, m_local_image_ctx->name, 0);
+
+  // prepare remote image
+  MockPrepareRemoteImageRequest mock_prepare_remote_image_request;
+  expect_send(mock_prepare_remote_image_request, mock_state_builder,
+              "remote mirror uuid", m_remote_image_ctx->id, -ENOENT);
+  expect_is_local_primary(mock_state_builder, false);
+  expect_is_linked(mock_state_builder, true);
+
+  C_SaferCond ctx;
+  MockThreads mock_threads(m_threads);
+  MockInstanceWatcher mock_instance_watcher;
+  MockBootstrapRequest *request = create_request(
+    &mock_threads, &mock_instance_watcher, "global image id",
+    "local mirror uuid", &ctx);
+  request->cancel();
+  request->send();
+  ASSERT_EQ(-ENOLINK, ctx.wait());
 }
 
 TEST_F(TestMockImageReplayerBootstrapRequest, OpenLocalImageError) {

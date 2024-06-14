@@ -16,10 +16,10 @@ function(add_tags name)
       OUTPUT_VARIABLE submodules
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(${result_code} EQUAL 0)
-      string(REPLACE "${TAGS_SRC_DIR}/" "" submodules ${submodules})
+      string(REPLACE "${TAGS_SRC_DIR}/" "" submodules "${submodules}")
       # cmake list uses ";" as the delimiter, so split the string manually
       # before iterating in it.
-      string(REPLACE "\n" ";" submodules ${submodules})
+      string(REPLACE "\n" ";" submodules "${submodules}")
       list(APPEND excludes ${submodules})
     endif()
   endif()
@@ -31,7 +31,7 @@ function(add_tags name)
     list(APPEND exclude_args --exclude=${exclude})
   endforeach()
   add_custom_target(${name}
-    COMMAND ${CTAGS_EXECUTABLE} -R --c++-kinds=+p --fields=+iaS --extra=+q ${exclude_args}
+    COMMAND ${CTAGS_EXECUTABLE} -R --python-kinds=-i --c++-kinds=+p --fields=+iaS --extra=+q ${exclude_args}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/${TAGS_SRC_DIR}
     COMMENT "Building ctags file ${TAGS_TAG_FILE}"
     VERBATIM)

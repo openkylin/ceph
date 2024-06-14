@@ -30,31 +30,6 @@ using ceph::decode_nohead;
 using ceph::encode;
 using ceph::Formatter;
 
-bool CrushWrapper::has_legacy_rule_ids() const
-{
-  for (unsigned i=0; i<crush->max_rules; i++) {
-    crush_rule *r = crush->rules[i];
-    if (r &&
-	r->mask.ruleset != i) {
-      return true;
-    }
-  }
-  return false;
-}
-
-std::map<int, int> CrushWrapper::renumber_rules()
-{
-  std::map<int, int> result;
-  for (unsigned i=0; i<crush->max_rules; i++) {
-    crush_rule *r = crush->rules[i];
-    if (r && r->mask.ruleset != i) {
-      result[r->mask.ruleset] = i;
-      r->mask.ruleset = i;
-    }
-  }
-  return result;
-}
-
 bool CrushWrapper::has_non_straw2_buckets() const
 {
   for (int i=0; i<crush->max_buckets; ++i) {
@@ -158,6 +133,29 @@ bool CrushWrapper::is_v5_rule(unsigned ruleid) const
     }
   }
   return false;
+}
+
+bool CrushWrapper::has_msr_rules() const
+{
+  for (unsigned i=0; i<crush->max_rules; i++) {
+    if (is_msr_rule(i)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CrushWrapper::is_msr_rule(unsigned ruleid) const
+{
+  if (ruleid >= crush->max_rules)
+    return false;
+
+  crush_rule *r = crush->rules[ruleid];
+  if (!r)
+    return false;
+
+  return r->type == CRUSH_RULE_TYPE_MSR_INDEP ||
+    r->type == CRUSH_RULE_TYPE_MSR_FIRSTN;
 }
 
 bool CrushWrapper::has_choose_args() const
@@ -1123,9 +1121,10 @@ int CrushWrapper::insert_item(
 
   int cur = item;
 
-  // create locations if locations don't exist and add child in
-  // location with 0 weight the more detail in the insert_item method
-  // declaration in CrushWrapper.h
+  // 1. create locations if locations don't exist
+  // 2. add child in the location with 0 weight.
+  // Check more detail of insert_item method declared in
+  // CrushWrapper.h
   for (auto p = type_map.begin(); p != type_map.end(); ++p) {
     // ignore device type
     if (p->first == 0)
@@ -1142,17 +1141,17 @@ int CrushWrapper::insert_item(
 
     if (!name_exists(q->second)) {
       ldout(cct, 5) << "insert_item creating bucket " << q->second << dendl;
-      int empty = 0, newid;
+      int zero_weight = 0, new_bucket_id;
       int r = add_bucket(0, 0,
-			 CRUSH_HASH_DEFAULT, p->first, 1, &cur, &empty, &newid);
+			 CRUSH_HASH_DEFAULT, p->first, 1, &cur, &zero_weight, &new_bucket_id);
       if (r < 0) {
         ldout(cct, 1) << "add_bucket failure error: " << cpp_strerror(r)
 		      << dendl;
         return r;
       }
-      set_item_name(newid, q->second);
+      set_item_name(new_bucket_id, q->second);
       
-      cur = newid;
+      cur = new_bucket_id;
       continue;
     }
 
@@ -1600,13 +1599,11 @@ int CrushWrapper::adjust_subtree_weight(CephContext *cct, int id, int weight,
   while (!q.empty()) {
     b = q.front();
     q.pop_front();
-    int local_changed = 0;
     for (unsigned i=0; i<b->size; ++i) {
       int n = b->items[i];
       if (n >= 0) {
 	adjust_item_weight_in_bucket(cct, n, weight, b->id, update_weight_sets);
 	++changed;
-	++local_changed;
       } else {
 	crush_bucket *sub = get_bucket(n);
 	if (IS_ERR(sub))
@@ -1811,8 +1808,7 @@ int CrushWrapper::populate_classes(
   set<int> roots;
   find_nonshadow_roots(&roots);
   for (auto &r : roots) {
-    if (r >= 0)
-      continue;
+    assert(r < 0);
     for (auto &c : class_name) {
       int clone;
       int res = device_class_clone(r, c.first, old_class_bucket, used_ids,
@@ -2265,6 +2261,7 @@ void CrushWrapper::reweight_bucket(
 int CrushWrapper::add_simple_rule_at(
   string name, string root_name,
   string failure_domain_name,
+  int num_failure_domains,
   string device_class,
   string mode, int rule_type,
   int rno,
@@ -2281,14 +2278,9 @@ int CrushWrapper::add_simple_rule_at(
         *err << "rule with ruleno " << rno << " exists";
       return -EEXIST;
     }
-    if (ruleset_exists(rno)) {
-      if (err)
-        *err << "ruleset " << rno << " exists";
-      return -EEXIST;
-    }
   } else {
     for (rno = 0; rno < get_max_rules(); rno++) {
-      if (!rule_exists(rno) && !ruleset_exists(rno))
+      if (!rule_exists(rno))
         break;
     }
   }
@@ -2332,10 +2324,7 @@ int CrushWrapper::add_simple_rule_at(
   int steps = 3;
   if (mode == "indep")
     steps = 5;
-  int min_rep = mode == "firstn" ? 1 : 3;
-  int max_rep = mode == "firstn" ? 10 : 20;
-  //set the ruleset the same as rule_id(rno)
-  crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_rep, max_rep);
+  crush_rule *rule = crush_make_rule(steps, rule_type);
   ceph_assert(rule);
   int step = 0;
   if (mode == "indep") {
@@ -2344,17 +2333,19 @@ int CrushWrapper::add_simple_rule_at(
   }
   crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, root, 0);
   if (type)
-    crush_rule_set_step(rule, step++,
-			mode == "firstn" ? CRUSH_RULE_CHOOSELEAF_FIRSTN :
-			CRUSH_RULE_CHOOSELEAF_INDEP,
-			CRUSH_CHOOSE_N,
-			type);
+    crush_rule_set_step(
+      rule, step++,
+      mode == "firstn" ? CRUSH_RULE_CHOOSELEAF_FIRSTN :
+      CRUSH_RULE_CHOOSELEAF_INDEP,
+      num_failure_domains <= 0 ? CRUSH_CHOOSE_N : num_failure_domains,
+      type);
   else
-    crush_rule_set_step(rule, step++,
-			mode == "firstn" ? CRUSH_RULE_CHOOSE_FIRSTN :
-			CRUSH_RULE_CHOOSE_INDEP,
-			CRUSH_CHOOSE_N,
-			0);
+    crush_rule_set_step(
+      rule, step++,
+      mode == "firstn" ? CRUSH_RULE_CHOOSE_FIRSTN :
+      CRUSH_RULE_CHOOSE_INDEP,
+      num_failure_domains <= 0 ? CRUSH_CHOOSE_N : num_failure_domains,
+      0);
   crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
 
   int ret = crush_add_rule(crush, rule, rno);
@@ -2370,13 +2361,125 @@ int CrushWrapper::add_simple_rule_at(
 int CrushWrapper::add_simple_rule(
   string name, string root_name,
   string failure_domain_name,
+  int num_failure_domains,
   string device_class,
   string mode, int rule_type,
   ostream *err)
 {
-  return add_simple_rule_at(name, root_name, failure_domain_name, device_class,
-			    mode,
-			    rule_type, -1, err);
+  return add_simple_rule_at(
+    name, root_name, failure_domain_name, num_failure_domains,
+    device_class,
+    mode,
+    rule_type, -1, err);
+}
+
+int CrushWrapper::add_multi_osd_per_failure_domain_rule_at(
+  string name, string root_name, string failure_domain_name,
+  int num_failure_domains,
+  int osds_per_failure_domain,
+  string device_class,
+  crush_rule_type rule_type,
+  int rno,
+  ostream *err)
+{
+  if (rule_exists(name)) {
+    if (err)
+      *err << "rule " << name << " exists";
+    return -EEXIST;
+  }
+  if (rno >= 0) {
+    if (rule_exists(rno)) {
+      if (err)
+        *err << "rule with ruleno " << rno << " exists";
+      return -EEXIST;
+    }
+  } else {
+    for (rno = 0; rno < get_max_rules(); rno++) {
+      if (!rule_exists(rno))
+        break;
+    }
+  }
+  if (!name_exists(root_name)) {
+    if (err)
+      *err << "root item " << root_name << " does not exist";
+    return -ENOENT;
+  }
+  int root = get_item_id(root_name);
+  int type = 0;
+  if (failure_domain_name.length()) {
+    type = get_type_id(failure_domain_name);
+    if (type < 0) {
+      if (err)
+	*err << "unknown type " << failure_domain_name;
+      return -EINVAL;
+    }
+  }
+  if (device_class.size()) {
+    if (!class_exists(device_class)) {
+      if (err)
+	*err << "device class " << device_class << " does not exist";
+      return -EINVAL;
+    }
+    int c = get_class_id(device_class);
+    if (class_bucket.count(root) == 0 ||
+	class_bucket[root].count(c) == 0) {
+      if (err)
+	*err << "root " << root_name << " has no devices with class "
+	     << device_class;
+      return -EINVAL;
+    }
+    root = class_bucket[root][c];
+  }
+  if (rule_type != CRUSH_RULE_TYPE_MSR_INDEP &&
+      rule_type != CRUSH_RULE_TYPE_MSR_FIRSTN) {
+    if (err)
+      *err << "unknown rule_type " << rule_type;
+    return -EINVAL;
+  }
+
+  int steps = 4;
+  crush_rule *rule = crush_make_rule(steps, rule_type);
+  ceph_assert(rule);
+  int step = 0;
+  crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, root, 0);
+  crush_rule_set_step(rule, step++,
+		      CRUSH_RULE_CHOOSE_MSR,
+		      num_failure_domains,
+		      type);
+  crush_rule_set_step(rule, step++,
+		      CRUSH_RULE_CHOOSE_MSR,
+		      osds_per_failure_domain,
+		      0);
+  crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+
+  int ret = crush_add_rule(crush, rule, rno);
+  if(ret < 0) {
+    *err << "failed to add rule " << rno << " because " << cpp_strerror(ret);
+    return ret;
+  }
+  set_rule_name(rno, name);
+  have_rmaps = false;
+  return rno;
+}
+
+
+int CrushWrapper::add_indep_multi_osd_per_failure_domain_rule(
+  string name, string root_name,
+  string failure_domain_name,
+  int num_failure_domains,
+  int osds_per_failure_domain,
+  string device_class,
+  ostream *err)
+{
+  return add_multi_osd_per_failure_domain_rule_at(
+    name, root_name,
+    failure_domain_name,
+    num_failure_domains,
+    osds_per_failure_domain,
+    device_class,
+    CRUSH_RULE_TYPE_MSR_INDEP,
+    -1,
+    err);
 }
 
 float CrushWrapper::_get_take_weight_osd_map(int root,
@@ -3031,7 +3134,29 @@ void CrushWrapper::encode(bufferlist& bl, uint64_t features) const
       continue;
 
     encode(crush->rules[i]->len, bl);
-    encode(crush->rules[i]->mask, bl);
+
+    /*
+     * legacy crush_rule_mask was
+     *
+     * struct crush_rule_mask {
+     * 	__u8 ruleset;
+     * 	__u8 type;
+     * 	__u8 min_size;
+     * 	__u8 max_size;
+     * };
+     *
+     * encode ruleset=ruleid, and min/max of 1/100
+     */
+    encode((__u8)i, bl);   // ruleset == ruleid
+    encode(crush->rules[i]->type, bl);
+    if (HAVE_FEATURE(features, SERVER_QUINCY)) {
+      encode((__u8)1, bl);   // min_size = 1
+      encode((__u8)100, bl); // max_size = 100
+    } else {
+      encode(crush->rules[i]->deprecated_min_size, bl);
+      encode(crush->rules[i]->deprecated_max_size, bl);
+    }
+
     for (unsigned j=0; j<crush->rules[i]->len; j++)
       encode(crush->rules[i]->steps[j], bl);
   }
@@ -3093,6 +3218,10 @@ void CrushWrapper::encode(bufferlist& bl, uint64_t features) const
       }
     }
   }
+  if (HAVE_FEATURE(features, CRUSH_MSR)) {
+    encode(crush->msr_descents, bl);
+    encode(crush->msr_collision_tries, bl);
+  }
 }
 
 static void decode_32_or_64_string_map(map<int32_t,string>& m, bufferlist::const_iterator& blp)
@@ -3152,7 +3281,16 @@ void CrushWrapper::decode(bufferlist::const_iterator& blp)
       decode(len, blp);
       crush->rules[i] = reinterpret_cast<crush_rule*>(calloc(1, crush_rule_size(len)));
       crush->rules[i]->len = len;
-      decode(crush->rules[i]->mask, blp);
+
+      __u8 ruleset; // ignore + discard
+      decode(ruleset, blp);
+      if (ruleset != i) {
+	throw ::ceph::buffer::malformed_input("crush ruleset_id != rule_id; encoding is too old");
+      }
+      decode(crush->rules[i]->type, blp);
+      decode(crush->rules[i]->deprecated_min_size, blp);
+      decode(crush->rules[i]->deprecated_max_size, blp);
+      
       for (unsigned j=0; j<crush->rules[i]->len; j++)
 	decode(crush->rules[i]->steps[j], blp);
     }
@@ -3233,6 +3371,12 @@ void CrushWrapper::decode(bufferlist::const_iterator& blp)
 	}
 	choose_args[choose_args_index] = arg_map;
       }
+    }
+    if (!blp.end()) {
+      decode(crush->msr_descents, blp);
+      decode(crush->msr_collision_tries, blp);
+    } else {
+      set_default_msr_tunables();
     }
     update_choose_args(nullptr); // in case we decode a legacy "corrupted" map
     finalize();
@@ -3489,6 +3633,8 @@ void CrushWrapper::dump_tunables(Formatter *f) const
   f->dump_int("chooseleaf_descend_once", get_chooseleaf_descend_once());
   f->dump_int("chooseleaf_vary_r", get_chooseleaf_vary_r());
   f->dump_int("chooseleaf_stable", get_chooseleaf_stable());
+  f->dump_int("msr_descents", get_msr_descents());
+  f->dump_int("msr_collision_tries", get_msr_collision_tries());
   f->dump_int("straw_calc_version", get_straw_calc_version());
   f->dump_int("allowed_bucket_algs", get_allowed_bucket_algs());
 
@@ -3519,6 +3665,7 @@ void CrushWrapper::dump_tunables(Formatter *f) const
   f->dump_int("has_v4_buckets", (int)has_v4_buckets());
   f->dump_int("require_feature_tunables5", (int)has_nondefault_tunables5());
   f->dump_int("has_v5_rules", (int)has_v5_rules());
+  f->dump_int("has_msr_rules", (int)has_msr_rules());
 }
 
 void CrushWrapper::dump_choose_args(Formatter *f) const
@@ -3570,27 +3717,24 @@ void CrushWrapper::dump_rules(Formatter *f) const
   }
 }
 
-void CrushWrapper::dump_rule(int ruleset, Formatter *f) const
+void CrushWrapper::dump_rule(int rule_id, Formatter *f) const
 {
   f->open_object_section("rule");
-  f->dump_int("rule_id", ruleset);
-  if (get_rule_name(ruleset))
-    f->dump_string("rule_name", get_rule_name(ruleset));
-  f->dump_int("ruleset", get_rule_mask_ruleset(ruleset));
-  f->dump_int("type", get_rule_mask_type(ruleset));
-  f->dump_int("min_size", get_rule_mask_min_size(ruleset));
-  f->dump_int("max_size", get_rule_mask_max_size(ruleset));
+  f->dump_int("rule_id", rule_id);
+  if (get_rule_name(rule_id))
+    f->dump_string("rule_name", get_rule_name(rule_id));
+  f->dump_int("type", get_rule_type(rule_id));
   f->open_array_section("steps");
-  for (int j=0; j<get_rule_len(ruleset); j++) {
+  for (int j=0; j<get_rule_len(rule_id); j++) {
     f->open_object_section("step");
-    switch (get_rule_op(ruleset, j)) {
+    switch (get_rule_op(rule_id, j)) {
     case CRUSH_RULE_NOOP:
       f->dump_string("op", "noop");
       break;
     case CRUSH_RULE_TAKE:
       f->dump_string("op", "take");
       {
-        int item = get_rule_arg1(ruleset, j);
+        int item = get_rule_arg1(rule_id, j);
         f->dump_int("item", item);
 
         const char *name = get_item_name(item);
@@ -3602,36 +3746,49 @@ void CrushWrapper::dump_rule(int ruleset, Formatter *f) const
       break;
     case CRUSH_RULE_CHOOSE_FIRSTN:
       f->dump_string("op", "choose_firstn");
-      f->dump_int("num", get_rule_arg1(ruleset, j));
-      f->dump_string("type", get_type_name(get_rule_arg2(ruleset, j)));
+      f->dump_int("num", get_rule_arg1(rule_id, j));
+      f->dump_string("type", get_type_name(get_rule_arg2(rule_id, j)));
       break;
     case CRUSH_RULE_CHOOSE_INDEP:
       f->dump_string("op", "choose_indep");
-      f->dump_int("num", get_rule_arg1(ruleset, j));
-      f->dump_string("type", get_type_name(get_rule_arg2(ruleset, j)));
+      f->dump_int("num", get_rule_arg1(rule_id, j));
+      f->dump_string("type", get_type_name(get_rule_arg2(rule_id, j)));
       break;
     case CRUSH_RULE_CHOOSELEAF_FIRSTN:
       f->dump_string("op", "chooseleaf_firstn");
-      f->dump_int("num", get_rule_arg1(ruleset, j));
-      f->dump_string("type", get_type_name(get_rule_arg2(ruleset, j)));
+      f->dump_int("num", get_rule_arg1(rule_id, j));
+      f->dump_string("type", get_type_name(get_rule_arg2(rule_id, j)));
       break;
     case CRUSH_RULE_CHOOSELEAF_INDEP:
       f->dump_string("op", "chooseleaf_indep");
-      f->dump_int("num", get_rule_arg1(ruleset, j));
-      f->dump_string("type", get_type_name(get_rule_arg2(ruleset, j)));
+      f->dump_int("num", get_rule_arg1(rule_id, j));
+      f->dump_string("type", get_type_name(get_rule_arg2(rule_id, j)));
+      break;
+    case CRUSH_RULE_CHOOSE_MSR:
+      f->dump_string("op", "choosemsr");
+      f->dump_int("num", get_rule_arg1(rule_id, j));
+      f->dump_string("type", get_type_name(get_rule_arg2(rule_id, j)));
       break;
     case CRUSH_RULE_SET_CHOOSE_TRIES:
       f->dump_string("op", "set_choose_tries");
-      f->dump_int("num", get_rule_arg1(ruleset, j));
+      f->dump_int("num", get_rule_arg1(rule_id, j));
       break;
     case CRUSH_RULE_SET_CHOOSELEAF_TRIES:
       f->dump_string("op", "set_chooseleaf_tries");
-      f->dump_int("num", get_rule_arg1(ruleset, j));
+      f->dump_int("num", get_rule_arg1(rule_id, j));
+      break;
+    case CRUSH_RULE_SET_MSR_DESCENTS:
+      f->dump_string("op", "set_msr_descents");
+      f->dump_int("num", get_rule_arg1(rule_id, j));
+      break;
+    case CRUSH_RULE_SET_MSR_COLLISION_TRIES:
+      f->dump_string("op", "set_msr_collision_tries");
+      f->dump_int("num", get_rule_arg1(rule_id, j));
       break;
     default:
-      f->dump_int("opcode", get_rule_op(ruleset, j));
-      f->dump_int("arg1", get_rule_arg1(ruleset, j));
-      f->dump_int("arg2", get_rule_arg2(ruleset, j));
+      f->dump_int("opcode", get_rule_op(rule_id, j));
+      f->dump_int("arg1", get_rule_arg1(rule_id, j));
+      f->dump_int("arg2", get_rule_arg2(rule_id, j));
     }
     f->close_section();
   }
@@ -3794,20 +3951,21 @@ void CrushWrapper::generate_test_instances(list<CrushWrapper*>& o)
 }
 
 /**
- * Determine the default CRUSH ruleset ID to be used with
+ * Determine the default CRUSH rule ID to be used with
  * newly created replicated pools.
  *
- * @returns a ruleset ID (>=0) or -1 if no suitable ruleset found
+ * @returns a rule ID (>=0) or -1 if no suitable rule found
  */
-int CrushWrapper::get_osd_pool_default_crush_replicated_ruleset(CephContext *cct)
+int CrushWrapper::get_osd_pool_default_crush_replicated_rule(
+  CephContext *cct)
 {
-  int crush_ruleset = cct->_conf.get_val<int64_t>("osd_pool_default_crush_rule");
-  if (crush_ruleset < 0) {
-    crush_ruleset = find_first_ruleset(pg_pool_t::TYPE_REPLICATED);
-  } else if (!ruleset_exists(crush_ruleset)) {
-    crush_ruleset = -1; // match find_first_ruleset() retval
+  int crush_rule = cct->_conf.get_val<int64_t>("osd_pool_default_crush_rule");
+  if (crush_rule < 0) {
+    crush_rule = find_first_rule(pg_pool_t::TYPE_REPLICATED);
+  } else if (!rule_exists(crush_rule)) {
+    crush_rule = -1; // match find_first_rule() retval
   }
-  return crush_ruleset;
+  return crush_rule;
 }
 
 bool CrushWrapper::is_valid_crush_name(const string& s)

@@ -25,14 +25,17 @@ There are three ways to get packages:
 Install packages with cephadm
 =============================
 
-#. Download the cephadm script::
+#. Download cephadm
 
-    curl --silent --remote-name --location https://github.com/ceph/ceph/raw/octopus/src/cephadm/cephadm
-    chmod +x cephadm
+.. prompt:: bash $
+   :substitutions:
+
+   curl --silent --remote-name --location https://download.ceph.com/rpm-|stable-release|/el9/noarch/cephadm
+   chmod +x cephadm
 
 #. Configure the Ceph repository based on the release name::
 
-     ./cephadm add-repo --release nautilus
+     ./cephadm add-repo --release |stable-release|
 
    For Octopus (15.2.0) and later releases, you can also specify a specific
    version::
@@ -44,8 +47,8 @@ Install packages with cephadm
      ./cephadm add-repo --dev my-branch
 
 #. Install the appropriate packages.  You can install them using your
-   package management tool (e.g., APT, Yum) directly, or you can also
-   use the cephadm wrapper.  For example::
+   package management tool (e.g., APT, Yum) directly, or you can
+   use the cephadm wrapper command.  For example::
 
      ./cephadm install ceph-common
    
@@ -117,7 +120,7 @@ For RPMs::
 
   https://download.ceph.com/rpm-{version}
 
-The major releases of Ceph are summarized at: :ref:`ceph-releases-general`
+The major releases of Ceph are summarized at: `Releases`_
 
 .. tip:: For non-US users: There might be a mirror close to you where
          to download Ceph from. For more information see: `Ceph Mirrors`_.
@@ -222,7 +225,7 @@ use with ``yum``. Replace ``{distro}`` with your Linux distribution, and
 
 .. prompt:: bash $
 
-    su -c 'rpm -Uvh https://download.ceph.com/rpms/{distro}/x86_64/ceph-{release}.el7.noarch.rpm'
+    su -c 'rpm -Uvh https://download.ceph.com/rpms/{distro}/x86_64/ceph-{release}.el8.noarch.rpm'
 
 You can download the RPMs directly from
 
@@ -248,6 +251,17 @@ openSUSE Tumbleweed
 The newest major release of Ceph is already available through the normal Tumbleweed repositories.
 There's no need to add another package repository manually.
 
+openEuler
+^^^^^^^^^
+
+There are two major versions supported in normal openEuler repositories. They are ceph 12.2.8 in openEuler-20.03-LTS series and ceph 16.2.7 in openEuler-22.03-LTS series. There’s no need to add another package repository manually.
+You can install ceph just by executing the following:
+
+.. prompt:: bash $
+
+    sudo yum -y install ceph
+
+Also you can download packages manually from https://repo.openeuler.org/openEuler-{release}/everything/{arch}/Packages/.
 
 Ceph Development Packages
 -------------------------
@@ -294,15 +308,15 @@ of a repo file. It can be retrieved via an HTTP request, for example
 
 .. prompt:: bash $
 
-    curl -L https://shaman.ceph.com/api/repos/ceph/{BRANCH}/latest/centos/7/repo/ | sudo tee /etc/yum.repos.d/shaman.repo
+    curl -L https://shaman.ceph.com/api/repos/ceph/{BRANCH}/latest/centos/8/repo/ | sudo tee /etc/yum.repos.d/shaman.repo
 
 The use of ``latest`` in the url, means it will figure out which is the last
 commit that has been built. Alternatively, a specific sha1 can be specified.
-For CentOS 7 and the master branch of Ceph, it would look like
+For CentOS 8 and the master branch of Ceph, it would look like
 
 .. prompt:: bash $
 
-    curl -L https://shaman.ceph.com/api/repos/ceph/master/53e772a45fdf2d211c0c383106a66e1feedec8fd/centos/7/repo/ | sudo tee /etc/apt/sources.list.d/shaman.list
+    curl -L https://shaman.ceph.com/api/repos/ceph/master/488e6be0edff7eb18343fd5c7e2d7ed56435888f/centos/8/repo/ | sudo tee /etc/apt/sources.list.d/shaman.list
 
 
 .. warning:: Development repositories are no longer available after two weeks.
@@ -319,17 +333,6 @@ before attempting an install.
 Debian Packages
 ~~~~~~~~~~~~~~~
 
-Ceph requires additional third party libraries.
-
-- libaio1
-- libsnappy1
-- libcurl3
-- curl
-- libgoogle-perftools4
-- google-perftools
-- libleveldb1
-
-
 The repository package installs the repository details on your local system for
 use with ``apt``. Replace ``{release}`` with the latest Ceph release. Replace
 ``{version}`` with the latest Ceph version number. Replace ``{distro}`` with
@@ -343,23 +346,14 @@ your Linux distribution codename. Replace ``{arch}`` with the CPU architecture.
 RPM Packages
 ~~~~~~~~~~~~
 
-Ceph requires additional additional third party libraries.
+Ceph requires additional third party libraries.
 To add the EPEL repository, execute the following
 
 .. prompt:: bash $
 
-   sudo yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+   sudo yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
 
-Ceph requires the following packages:
-
-- snappy
-- leveldb
-- gdisk
-- python-argparse
-- gperftools-libs
-
-
-Packages are currently built for the RHEL/CentOS7 (``el7``) platforms.  The
+Packages are currently built for the RHEL/CentOS8 (``el8``) platforms.  The
 repository package installs the repository details on your local system for use
 with ``yum``. Replace ``{distro}`` with your distribution.
 
@@ -393,6 +387,7 @@ line to get the short codename.
 
 
 
+.. _Releases: https://docs.ceph.com/en/latest/releases/
 .. _the testing Debian repository: https://download.ceph.com/debian-testing/dists
 .. _the shaman page: https://shaman.ceph.com
 .. _Ceph Mirrors: ../mirrors

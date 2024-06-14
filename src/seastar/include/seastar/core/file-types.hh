@@ -21,11 +21,23 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <type_traits>
+#include <seastar/util/modules.hh>
+#endif
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT_BEGIN
+
+/// \addtogroup fileio-module
+/// @{
+
+/// Enumeration describing how a file is to be opened.
+///
+/// \see file::open_file_dma()
 enum class open_flags {
     rw = O_RDWR,
     ro = O_RDONLY,
@@ -52,9 +64,6 @@ inline void operator&=(open_flags& a, open_flags b) {
     a = (a & b);
 }
 
-/// \addtogroup fileio-module
-/// @{
-
 /// Enumeration describing the type of a directory entry being listed.
 ///
 /// \see file::list_directory()
@@ -68,6 +77,24 @@ enum class directory_entry_type {
     regular,
     socket,
 };
+
+namespace internal::linux_abi {
+
+// From getdents(2):
+// check for 64-bit inode number
+static_assert(sizeof(ino_t) == 8, "large file support not enabled");
+static_assert(sizeof(off_t) == 8, "large file support not enabled");
+
+// From getdents(2):
+struct linux_dirent64 {
+    ino_t          d_ino;    /* 64-bit inode number */
+    off_t          d_off;    /* 64-bit offset to next structure */
+    unsigned short d_reclen; /* Size of this dirent */
+    unsigned char  d_type;   /* File type */
+    char           d_name[]; /* Filename (null-terminated) */
+};
+
+} // internal::linux_abi namespace
 
 /// Enumeration describing the type of a particular filesystem
 enum class fs_type {
@@ -132,5 +159,7 @@ inline constexpr file_permissions operator&(file_permissions a, file_permissions
 }
 
 /// @}
+
+SEASTAR_MODULE_EXPORT_END
 
 } // namespace seastar

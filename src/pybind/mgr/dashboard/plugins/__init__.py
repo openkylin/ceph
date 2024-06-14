@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import abc
-import six
 
-from .pluggy import HookspecMarker, HookimplMarker, PluginManager
+from .pluggy import HookimplMarker, HookspecMarker, PluginManager
 
 
-@six.add_metaclass(abc.ABCMeta)
-class Interface(object):
+class Interface(object, metaclass=abc.ABCMeta):
     pass
 
 

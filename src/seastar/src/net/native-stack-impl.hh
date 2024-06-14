@@ -21,9 +21,11 @@
 
 #pragma once
 
-#include <seastar/core/reactor.hh>
-#include <seastar/net/stack.hh>
+#ifndef SEASTAR_MODULE
 #include <iostream>
+#endif
+
+#include <seastar/net/stack.hh>
 #include <seastar/net/inet_address.hh>
 
 namespace seastar {
@@ -42,7 +44,7 @@ class native_network_stack;
 
 // native_server_socket_impl
 template <typename Protocol>
-class native_server_socket_impl : public api_v2::server_socket_impl {
+class native_server_socket_impl : public server_socket_impl {
     typename Protocol::listener _listener;
 public:
     native_server_socket_impl(Protocol& proto, uint16_t port, listen_options opt);
@@ -91,6 +93,7 @@ class native_connected_socket_impl : public connected_socket_impl {
 public:
     explicit native_connected_socket_impl(lw_shared_ptr<typename Protocol::connection> conn)
         : _conn(std::move(conn)) {}
+    using connected_socket_impl::source;
     virtual data_source source() override;
     virtual data_sink sink() override;
     virtual void shutdown_input() override;
@@ -101,6 +104,11 @@ public:
     bool get_keepalive() const override;
     void set_keepalive_parameters(const keepalive_params&) override;
     keepalive_params get_keepalive_parameters() const override;
+    int get_sockopt(int level, int optname, void* data, size_t len) const override;
+    void set_sockopt(int level, int optname, const void* data, size_t len) override;
+    socket_address local_address() const noexcept override;
+    socket_address remote_address() const noexcept override;
+    virtual future<> wait_input_shutdown() override;
 };
 
 template <typename Protocol>
@@ -192,6 +200,10 @@ public:
         _conn->close_write();
         return make_ready_future<>();
     }
+    virtual bool can_batch_flushes() const noexcept override { return true; }
+    virtual void on_batch_flush_error() noexcept override {
+        _conn->close_read();
+    }
 };
 
 template <typename Protocol>
@@ -250,6 +262,31 @@ template <typename Protocol>
 keepalive_params native_connected_socket_impl<Protocol>::get_keepalive_parameters() const {
     // FIXME: implement
     return tcp_keepalive_params {std::chrono::seconds(0), std::chrono::seconds(0), 0};
+}
+
+template<typename Protocol>
+void native_connected_socket_impl<Protocol>::set_sockopt(int level, int optname, const void* data, size_t len) {
+    throw std::runtime_error("Setting custom socket options is not supported for native stack");
+}
+
+template<typename Protocol>
+int native_connected_socket_impl<Protocol>::get_sockopt(int level, int optname, void* data, size_t len) const {
+    throw std::runtime_error("Getting custom socket options is not supported for native stack");
+}
+
+template<typename Protocol>
+socket_address native_connected_socket_impl<Protocol>::local_address() const noexcept {
+    return {_conn->local_ip(), _conn->local_port()};
+}
+
+template<typename Protocol>
+socket_address native_connected_socket_impl<Protocol>::remote_address() const noexcept {
+    return {_conn->foreign_ip(), _conn->foreign_port()};
+}
+
+template <typename Protocol>
+future<> native_connected_socket_impl<Protocol>::wait_input_shutdown() {
+    return _conn->wait_input_shutdown();
 }
 
 }

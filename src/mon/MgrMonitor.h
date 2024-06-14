@@ -21,15 +21,16 @@
 #include "MgrMap.h"
 #include "PaxosService.h"
 #include "MonCommand.h"
+#include "CommandHandler.h"
 
-class MgrMonitor: public PaxosService
+class MgrMonitor: public PaxosService, public CommandHandler
 {
   MgrMap map;
   MgrMap pending_map;
   bool ever_had_active_mgr = false;
 
-  std::map<std::string, bufferlist> pending_metadata;
-  std::set<std::string>             pending_metadata_rm;
+  std::map<std::string, ceph::buffer::list> pending_metadata;
+  std::set<std::string> pending_metadata_rm;
 
   std::map<std::string,Option> mgr_module_options;
   std::list<std::string> misc_option_strings;
@@ -45,7 +46,13 @@ class MgrMonitor: public PaxosService
    * @return true if a standby was promoted
    */
   bool promote_standby();
-  void drop_active();
+
+  /**
+   * Drop the active daemon from the MgrMap. No promotion is performed.
+   *
+   * @return whether PAXOS was plugged by this method
+   */
+  bool drop_active();
 
   /**
    * Remove this gid from the list of standbys.  By default,
@@ -71,7 +78,7 @@ class MgrMonitor: public PaxosService
   std::vector<MonCommand> pending_command_descs;
 
 public:
-  MgrMonitor(Monitor *mn, Paxos *p, const string& service_name)
+  MgrMonitor(Monitor &mn, Paxos &p, const std::string& service_name)
     : PaxosService(mn, p, service_name)
   {}
   ~MgrMonitor() override {}
@@ -84,7 +91,7 @@ public:
   const std::map<std::string,Option>& get_mgr_module_options() {
     return mgr_module_options;
   }
-  const Option *find_module_option(const string& name);
+  const Option *find_module_option(const std::string& name);
 
   bool in_use() const { return map.epoch > 0; }
 
@@ -93,7 +100,7 @@ public:
   void prime_mgr_client();
 
   void create_initial() override;
-  void get_store_prefixes(std::set<string>& s) const override;
+  void get_store_prefixes(std::set<std::string>& s) const override;
   void update_from_paxos(bool *need_bootstrap) override;
   void post_paxos_update() override;
   void create_pending() override;
@@ -119,16 +126,17 @@ public:
 
   void tick() override;
 
-  void print_summary(Formatter *f, std::ostream *ss) const;
+  void print_summary(ceph::Formatter *f, std::ostream *ss) const;
 
   const std::vector<MonCommand> &get_command_descs() const;
 
-  int load_metadata(const string& name, std::map<string, string>& m,
-		    ostream *err) const;
-  int dump_metadata(const string& name, Formatter *f, ostream *err);
-  void print_nodes(Formatter *f) const;
-  void count_metadata(const string& field, Formatter *f);
-  void count_metadata(const string& field, std::map<string,int> *out);
+  int load_metadata(const std::string& name, std::map<std::string, std::string>& m,
+		    std::ostream *err) const;
+  int dump_metadata(const std::string& name, ceph::Formatter *f, std::ostream *err);
+  void print_nodes(ceph::Formatter *f) const;
+  void count_metadata(const std::string& field, ceph::Formatter *f);
+  void count_metadata(const std::string& field, std::map<std::string,int> *out);
+  void get_versions(std::map<std::string, std::list<std::string>> &versions);
 
   // When did the mon last call into our tick() method?  Used for detecting
   // when the mon was not updating us for some period (e.g. during slow

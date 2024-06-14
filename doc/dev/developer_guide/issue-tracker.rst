@@ -1,4 +1,4 @@
-.. _issue tracker:
+.. _issue-tracker:
 
 Issue Tracker
 =============

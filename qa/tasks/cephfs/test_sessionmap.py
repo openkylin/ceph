@@ -5,7 +5,6 @@ import logging
 from tasks.cephfs.fuse_mount import FuseMount
 from teuthology.exceptions import CommandFailedError
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
-from teuthology.misc import sudo_write_file
 
 log = logging.getLogger(__name__)
 
@@ -159,14 +158,14 @@ class TestSessionMap(CephFSTestCase):
         if mon_caps is None:
             mon_caps = "allow r"
 
-        out = self.fs.mon_manager.raw_cluster_cmd(
+        out = self.get_ceph_cmd_stdout(
             "auth", "get-or-create", "client.{name}".format(name=id_name),
             "mds", mds_caps,
             "osd", osd_caps,
             "mon", mon_caps
         )
         mount.client_id = id_name
-        sudo_write_file(mount.client_remote, mount.get_keyring_path(), out)
+        mount.client_remote.write_file(mount.get_keyring_path(), out, sudo=True)
         self.set_conf("client.{name}".format(name=id_name), "keyring", mount.get_keyring_path())
 
     def test_session_reject(self):
@@ -183,7 +182,7 @@ class TestSessionMap(CephFSTestCase):
         # Configure a client that is limited to /foo/bar
         self._configure_auth(self.mount_b, "badguy", "allow rw path=/foo/bar")
         # Check he can mount that dir and do IO
-        self.mount_b.mount_wait(mount_path="/foo/bar")
+        self.mount_b.mount_wait(cephfs_mntpt="/foo/bar")
         self.mount_b.create_destroy()
         self.mount_b.umount_wait()
 
@@ -192,14 +191,15 @@ class TestSessionMap(CephFSTestCase):
         # Try to mount the client, see that it fails
         with self.assert_cluster_log("client session with non-allowable root '/baz' denied"):
             with self.assertRaises(CommandFailedError):
-                self.mount_b.mount(mount_path="/foo/bar")
+                self.mount_b.mount_wait(cephfs_mntpt="/foo/bar")
 
-    def test_session_evict_blacklisted(self):
+    def test_session_evict_blocklisted(self):
         """
-        Check that mds evicts blacklisted client
+        Check that mds evicts blocklisted client
         """
         if not isinstance(self.mount_a, FuseMount):
-            self.skipTest("Requires FUSE client to use is_blacklisted()")
+            self.skipTest("Requires FUSE client to use "
+                          "mds_cluster.is_addr_blocklisted()")
 
         self.fs.set_max_mds(2)
         status = self.fs.wait_for_daemons()
@@ -220,7 +220,8 @@ class TestSessionMap(CephFSTestCase):
         mount_a_client_id = self.mount_a.get_global_id()
         self.fs.mds_asok(['session', 'evict', "%s" % mount_a_client_id],
                          mds_id=self.fs.get_rank(rank=0, status=status)['name'])
-        self.wait_until_true(lambda: self.mount_a.is_blacklisted(), timeout=30)
+        self.wait_until_true(lambda: self.mds_cluster.is_addr_blocklisted(
+            self.mount_a.get_global_addr()), timeout=30)
 
         # 10 seconds should be enough for evicting client
         time.sleep(10)

@@ -25,7 +25,7 @@ case "$1" in
        # 1. create user if not existing
        if ! getent passwd | grep -q "^cephadm:"; then
          echo -n "Adding system user cephadm.."
-         adduser --quiet --system --disabled-password --gecos 'Ceph-dameon user for cephadm' --shell /bin/bash cephadm 2>/dev/null || true
+         adduser --quiet --system --disabled-password --home /var/lib/cephadm --gecos 'Ceph-dameon user for cephadm' --shell /bin/bash cephadm 2>/dev/null || true
          echo "..done"
        fi
 
@@ -37,15 +37,15 @@ case "$1" in
        fi
 
        # set up (initially empty) .ssh/authorized_keys file
-       if ! test -d /home/cephadm/.ssh; then
-	   mkdir /home/cephadm/.ssh
-	   chown --reference /home/cephadm /home/cephadm/.ssh
-	   chmod 0700 /home/cephadm/.ssh
+       if ! test -d /var/lib/cephadm/.ssh; then
+	   mkdir /var/lib/cephadm/.ssh
+	   chown --reference /var/lib/cephadm /var/lib/cephadm/.ssh
+	   chmod 0700 /var/lib/cephadm/.ssh
        fi
-       if ! test -e /home/cephadm/.ssh/authorized_keys; then
-	   touch /home/cephadm/.ssh/authorized_keys
-	   chown --reference /home/cephadm /home/cephadm/.ssh/authorized_keys
-	   chmod 0600 /home/cephadm/.ssh/authorized_keys
+       if ! test -e /var/lib/cephadm/.ssh/authorized_keys; then
+	   touch /var/lib/cephadm/.ssh/authorized_keys
+	   chown --reference /var/lib/cephadm /var/lib/cephadm/.ssh/authorized_keys
+	   chmod 0600 /var/lib/cephadm/.ssh/authorized_keys
        fi
 
     ;;

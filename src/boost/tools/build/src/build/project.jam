@@ -2,8 +2,8 @@
 # Copyright 2002, 2005, 2006 Rene Rivera
 # Copyright 2002, 2003, 2004, 2005, 2006 Vladimir Prus
 # Distributed under the Boost Software License, Version 1.0.
-# (See accompanying file LICENSE_1_0.txt or copy at
-# http://www.boost.org/LICENSE_1_0.txt)
+# (See accompanying file LICENSE.txt or copy at
+# https://www.bfgroup.xyz/b2/LICENSE.txt)
 
 # Implements project representation and loading. Each project is represented by:
 #  - a module where all the Jamfile content lives.
@@ -256,7 +256,7 @@ rule find-jamfile (
         errors.error Unable to load Jamfile.
             : Could not find a Jamfile in directory '$(dir)'.
             : Attempted to find it with pattern '$(JAMFILE:J=" ")'.
-            : Please consult the documentation at "'http://www.boost.org'." ;
+            : Please consult the documentation at "'https://www.bfgroup.xyz/b2/'." ;
     }
 
     return $(jamfile-to-load) ;
@@ -328,7 +328,7 @@ local rule load-jamfile ( dir : jamfile-module : synthesize ? )
         errors.error "Multiple Jamfiles found at '$(dir)'" :
             "Filenames are: " $(jamfile-to-load:D=) ;
     }
-    
+
     if ! $(jamfile-to-load) && $(synthesize)
     {
         jamfile-to-load = $(dir)/@ ;
@@ -745,6 +745,11 @@ class project-attributes
         {
             self.$(attribute) = $(specification) ;
         }
+        else if $(attribute) = "common-requirements"
+        {
+            set "requirements" : $(specification) ;
+            set "usage-requirements" : $(specification) ;
+        }
         else if $(attribute) = "requirements"
         {
             local result = [ property-set.refine-from-user-input
@@ -964,7 +969,7 @@ rule target ( project-module : allow-missing ? )
 }
 
 
-# Defines a Boost.Build extension project. Such extensions usually contain
+# Defines a B2 extension project. Such extensions usually contain
 # library targets and features that can be used by many people. Even though
 # extensions are really projects, they can be initialized as a module would be
 # with the "using" (project.project-rules.using) mechanism.
@@ -988,7 +993,7 @@ rule extension ( id space ? : options * : * )
         {
             root-project = [ project.attribute $(root-project) parent-module ] ;
         }
-        
+
         # Default to creating extensions in /ext/.. project space.
         local id = $(1[1]) ;
         local space = $(1[2]) ;
@@ -1249,13 +1254,21 @@ module project-rules
     rule explicit ( target-names * )
     {
         import project ;
+        import "class" ;
         # If 'explicit' is used in a helper rule defined in Jamroot and
         # inherited by children, then most of the time we want 'explicit' to
         # operate on the Jamfile where the helper rule is invoked.
         local t = [ project.current ] ;
         for local n in $(target-names)
         {
-            $(t).mark-target-as-explicit $(n) ;
+            if [ class.is-instance $(n) ]
+            {
+                $(t).mark-target-as-explicit [ $(n).name ] ;
+            }
+            else
+            {
+                $(t).mark-target-as-explicit $(n) ;
+            }
         }
     }
 

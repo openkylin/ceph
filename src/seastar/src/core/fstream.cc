@@ -19,15 +19,70 @@
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <fmt/format.h>
+#include <fmt/ostream.h>
+#include <malloc.h>
+#include <string.h>
+#include <cassert>
+#include <ratio>
+#include <optional>
+#include <utility>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/fstream.hh>
 #include <seastar/core/align.hh>
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/core/reactor.hh>
-#include <malloc.h>
-#include <string.h>
+#include <seastar/core/when_all.hh>
+#include <seastar/core/io_intent.hh>
+#endif
 
 namespace seastar {
+
+static_assert(std::is_nothrow_constructible_v<data_source>);
+static_assert(std::is_nothrow_move_constructible_v<data_source>);
+
+static_assert(std::is_nothrow_constructible_v<data_sink>);
+static_assert(std::is_nothrow_move_constructible_v<data_sink>);
+
+static_assert(std::is_nothrow_constructible_v<temporary_buffer<char>>);
+static_assert(std::is_nothrow_move_constructible_v<temporary_buffer<char>>);
+
+static_assert(std::is_nothrow_constructible_v<input_stream<char>>);
+static_assert(std::is_nothrow_move_constructible_v<input_stream<char>>);
+
+static_assert(std::is_nothrow_constructible_v<output_stream<char>>);
+static_assert(std::is_nothrow_move_constructible_v<output_stream<char>>);
+
+// The buffers size must not be greater than the limit, but when capping
+// it we make it 2^n to better utilize the memory allocated for buffers
+template <typename T>
+static inline T select_buffer_size(T configured_value, T maximum_value) noexcept {
+    if (configured_value <= maximum_value) {
+        return configured_value;
+    } else {
+        return T(1) << log2floor(maximum_value);
+    }
+}
+
+#if SEASTAR_API_LEVEL >= 7
+template <typename Options>
+inline internal::maybe_priority_class_ref get_io_priority(const Options& opts) {
+    return internal::maybe_priority_class_ref{};
+}
+#else
+template <typename Options>
+inline internal::maybe_priority_class_ref get_io_priority(const Options& opts) {
+    return internal::maybe_priority_class_ref(opts.io_priority_class);
+}
+#endif
 
 class file_data_source_impl : public data_source_impl {
     struct issued_read {
@@ -48,9 +103,10 @@ class file_data_source_impl : public data_source_impl {
     unsigned _reads_in_progress = 0;
     unsigned _current_read_ahead;
     future<> _dropped_reads = make_ready_future<>();
-    compat::optional<promise<>> _done;
+    std::optional<promise<>> _done;
     size_t _current_buffer_size;
     bool _in_slow_start = false;
+    io_intent _intent;
     using unused_ratio_target = std::ratio<25, 100>;
 private:
     size_t minimal_buffer_size() const {
@@ -161,10 +217,17 @@ private:
 public:
     file_data_source_impl(file f, uint64_t offset, uint64_t len, file_input_stream_options options)
             : _file(std::move(f)), _options(options), _pos(offset), _remain(len), _current_read_ahead(get_initial_read_ahead())
-            , _current_buffer_size(_options.buffer_size) {
+    {
+        _options.buffer_size = select_buffer_size(_options.buffer_size, _file.disk_read_max_length());
+        _current_buffer_size = _options.buffer_size;
         // prevent wraparounds
         set_new_buffer_size(after_skip::no);
         _remain = std::min(std::numeric_limits<uint64_t>::max() - _pos, _remain);
+    }
+    virtual ~file_data_source_impl() override {
+        // If the data source hasn't been closed, we risk having reads in progress
+        // that will try to access freed memory.
+        assert(_reads_in_progress == 0);
     }
     virtual future<temporary_buffer<char>> get() override {
         if (!_read_buffers.empty() && !_read_buffers.front()._ready.available()) {
@@ -217,6 +280,7 @@ public:
         if (!_reads_in_progress) {
             _done->set_value();
         }
+        _intent.cancel();
         return _done->get_future().then([this] {
             uint64_t dropped = 0;
             for (auto&& c : _read_buffers) {
@@ -252,20 +316,20 @@ private:
             auto end = std::min(align_up(start + _current_buffer_size, align), _pos + _remain);
             auto len = end - start;
             auto actual_size = std::min(end - _pos, _remain);
-            _read_buffers.emplace_back(_pos, actual_size, futurize<future<temporary_buffer<char>>>::apply([&] {
-                    return _file.dma_read_bulk<char>(start, len, _options.io_priority_class);
+            _read_buffers.emplace_back(_pos, actual_size, futurize_invoke([&] {
+                    return _file.dma_read_bulk_impl(start, len, get_io_priority(_options), &_intent);
             }).then_wrapped(
-                    [this, start, pos = _pos, remain = _remain] (future<temporary_buffer<char>> ret) {
+                    [this, start, pos = _pos, remain = _remain] (future<temporary_buffer<uint8_t>> ret) {
                 --_reads_in_progress;
                 if (_done && !_reads_in_progress) {
                     _done->set_value();
                 }
                 if (ret.failed()) {
                     // no games needed
-                    return ret;
+                    return make_exception_future<temporary_buffer<char>>(ret.get_exception());
                 } else {
                     // first or last buffer, need trimming
-                    auto tmp = ret.get0();
+                    auto tmp = ret.get();
                     auto real_end = start + tmp.size();
                     if (real_end <= pos) {
                         return make_ready_future<temporary_buffer<char>>();
@@ -276,7 +340,7 @@ private:
                     if (start < pos) {
                         tmp.trim_front(pos - start);
                     }
-                    return make_ready_future<temporary_buffer<char>>(std::move(tmp));
+                    return make_ready_future<temporary_buffer<char>>(temporary_buffer<char>(reinterpret_cast<char*>(tmp.get_write()), tmp.size(), tmp.release()));
                 }
             }));
             _remain -= end - _pos;
@@ -319,6 +383,7 @@ class file_data_sink_impl : public data_sink_impl {
 public:
     file_data_sink_impl(file f, file_output_stream_options options)
             : _file(std::move(f)), _options(options) {
+        _options.buffer_size = select_buffer_size<unsigned>(_options.buffer_size, _file.disk_write_max_length());
         _write_behind_sem.ensure_space_for_waiters(1); // So that wait() doesn't throw
     }
     future<> put(net::packet data) override { abort(); }
@@ -365,7 +430,7 @@ public:
             return make_ready_future<>();
         });
     }
-public:
+private:
     future<> do_put(uint64_t pos, temporary_buffer<char> buf) noexcept {
       try {
         // put() must usually be of chunks multiple of file::dma_alignment.
@@ -381,13 +446,14 @@ public:
             // This should only happen when the user calls output_stream::flush().
             auto tmp = allocate_buffer(align_up(buf.size(), _file.disk_write_dma_alignment()));
             ::memcpy(tmp.get_write(), buf.get(), buf.size());
+            ::memset(tmp.get_write() + buf.size(), 0, tmp.size() - buf.size());
             buf = std::move(tmp);
             p = buf.get();
             buf_size = buf.size();
             truncate = true;
         }
 
-        return _file.dma_write(pos, p, buf_size, _options.io_priority_class).then(
+        return _file.dma_write_impl(pos, reinterpret_cast<const uint8_t*>(p), buf_size, get_io_priority(_options), nullptr).then(
                 [this, pos, buf = std::move(buf), truncate, buf_size] (size_t size) mutable {
             // short write handling
             if (size < buf_size) {
@@ -428,20 +494,37 @@ public:
             return _file.close();
         });
     }
+    virtual size_t buffer_size() const noexcept override { return _options.buffer_size; }
 };
 
-data_sink make_file_data_sink(file f, file_output_stream_options options) {
-    return data_sink(std::make_unique<file_data_sink_impl>(std::move(f), options));
+future<data_sink> make_file_data_sink(file f, file_output_stream_options options) noexcept {
+    try {
+        return make_ready_future<data_sink>(std::make_unique<file_data_sink_impl>(f, options));
+    } catch (...) {
+        return f.close().then_wrapped([ex = std::current_exception(), f] (future<> fut) mutable {
+            if (fut.failed()) {
+                try {
+                    std::rethrow_exception(std::move(ex));
+                } catch (...) {
+                    std::throw_with_nested(std::runtime_error(fmt::format("While handling failed construction of data_sink, caught exception: {}",
+                                fut.get_exception())));
+                }
+            }
+            return make_exception_future<data_sink>(std::move(ex));
+        });
+    }
 }
 
-output_stream<char> make_file_output_stream(file f, size_t buffer_size) {
+future<output_stream<char>> make_file_output_stream(file f, size_t buffer_size) noexcept {
     file_output_stream_options options;
     options.buffer_size = buffer_size;
     return make_file_output_stream(std::move(f), options);
 }
 
-output_stream<char> make_file_output_stream(file f, file_output_stream_options options) {
-    return output_stream<char>(make_file_data_sink(std::move(f), options), options.buffer_size, true);
+future<output_stream<char>> make_file_output_stream(file f, file_output_stream_options options) noexcept {
+    return make_file_data_sink(std::move(f), options).then([] (data_sink&& ds) {
+        return output_stream<char>(std::move(ds));
+    });
 }
 
 /*

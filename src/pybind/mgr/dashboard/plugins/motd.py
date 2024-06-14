@@ -54,12 +54,8 @@ class Motd(SP):
                          'expires="{expires}"'.format(**data)
             return 0, stdout, ''
 
-        @CLICommand("dashboard {name} set".format(name=self.NAME),
-                    "name=severity,type=CephChoices,strings={} ".format(
-                        "|".join(s.value for s in MotdSeverity))
-                    + "name=expires,type=CephString "
-                    + "name=message,type=CephString")
-        def _set(_, severity: str, expires: str, message: str):
+        @CLICommand("dashboard {name} set".format(name=self.NAME))
+        def _set(_, severity: MotdSeverity, expires: str, message: str):
             if expires != '0':
                 delta = parse_timedelta(expires)
                 if not delta:
@@ -70,7 +66,7 @@ class Motd(SP):
             value: str = json.dumps({
                 'message': message,
                 'md5': hashlib.md5(message.encode()).hexdigest(),
-                'severity': severity,
+                'severity': severity.value,
                 'expires': expires
             })
             self.set_option(self.NAME, value)
@@ -83,9 +79,9 @@ class Motd(SP):
 
     @PM.add_hook
     def get_controllers(self):
-        from ..controllers import RESTController, UiApiController
+        from ..controllers import RESTController, UIRouter
 
-        @UiApiController('/motd')
+        @UIRouter('/motd')
         class MessageOfTheDay(RESTController):
             def list(_) -> Optional[Dict]:  # pylint: disable=no-self-argument
                 value: str = self.get_option(self.NAME)

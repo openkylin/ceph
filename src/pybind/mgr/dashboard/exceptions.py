@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 
 class ViewCacheNoDataException(Exception):
@@ -121,4 +120,16 @@ class GrafanaError(Exception):
 
 
 class PasswordPolicyException(Exception):
+    pass
+
+
+class ExpiredSignatureError(Exception):
+    pass
+
+
+class InvalidTokenError(Exception):
+    pass
+
+
+class InvalidAlgorithmError(Exception):
     pass
